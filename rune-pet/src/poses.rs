@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::f32::consts::{PI, TAU};
 use std::path::Path;
 
+use crate::animation::AnimationLife;
+use crate::harness::HarnessMood;
 use crate::pet_state::{compute_walk_phase_delta, facing_to_yaw_rad};
 
 pub type Pose = BTreeMap<String, [f32; 3]>;
@@ -231,7 +233,10 @@ pub struct BlenderInput {
     pub neck_yaw: f32,
     pub neck_pitch: f32,
     pub chest_yaw: f32,
+    pub eyes: [f32; 2],
+    pub cursor_attention: bool,
     pub petting_intensity: f32,
+    pub harness_mood: Option<HarnessMood>,
 }
 
 fn max_pose_angular_delta(a: &Pose, b: &Pose) -> f32 {
@@ -295,7 +300,9 @@ pub struct PoseBlender {
     neck_yaw: f32,
     neck_pitch: f32,
     chest_yaw: f32,
+    eyes: [f32; 2],
     petting_intensity: f32,
+    life: AnimationLife,
     total_time_sec: f32,
 }
 
@@ -341,7 +348,9 @@ impl PoseBlender {
             neck_yaw: 0.0,
             neck_pitch: 0.0,
             chest_yaw: 0.0,
+            eyes: [0.0; 2],
             petting_intensity: 0.0,
+            life: AnimationLife::default(),
             total_time_sec: 0.0,
         }
     }
@@ -400,6 +409,7 @@ impl PoseBlender {
         self.neck_yaw = 0.0;
         self.neck_pitch = 0.0;
         self.chest_yaw = 0.0;
+        self.eyes = [0.0; 2];
         self.petting_intensity = 0.0;
         self.total_time_sec = 1.2;
     }
@@ -426,14 +436,16 @@ impl PoseBlender {
 
         if self.pose_duration_ms > 0.0 && self.pose_elapsed_ms < self.pose_duration_ms {
             self.pose_elapsed_ms = (self.pose_elapsed_ms + dt_ms).min(self.pose_duration_ms);
-            self.pose_current = interpolate_pose(
-                &self.pose_from,
-                &self.pose_to,
-                self.pose_elapsed_ms / self.pose_duration_ms,
-            );
-        } else {
-            self.pose_from_name = self.pose_name;
-            self.pose_current = self.pose_to.clone();
+            if self.pose_elapsed_ms >= self.pose_duration_ms {
+                self.pose_from_name = self.pose_name;
+                self.pose_current = self.pose_to.clone();
+            } else {
+                self.pose_current = interpolate_pose(
+                    &self.pose_from,
+                    &self.pose_to,
+                    self.pose_elapsed_ms / self.pose_duration_ms,
+                );
+            }
         }
 
         if self.expr_duration_ms > 0.0 && self.expr_elapsed_ms < self.expr_duration_ms {
@@ -444,8 +456,6 @@ impl PoseBlender {
                 let b = self.expr_to.get(n).copied().unwrap_or(0.0);
                 self.expr_weights.insert(n, a + (b - a) * alpha);
             }
-        } else {
-            self.expr_weights = self.expr_to.clone();
         }
 
         // Tie walk animation strictly to actual physical horizontal pixels moved (DPI-scaled)
@@ -487,12 +497,32 @@ impl PoseBlender {
         let sway_lerp = (dt_sec * 10.0).min(1.0);
         self.carry_sway_current += (input.carry_sway.clamp(-1.0, 1.0) - self.carry_sway_current) * sway_lerp;
 
-        self.head_yaw = input.head_yaw;
-        self.head_pitch = input.head_pitch;
-        self.neck_yaw = input.neck_yaw;
-        self.neck_pitch = input.neck_pitch;
-        self.chest_yaw = input.chest_yaw;
-        self.petting_intensity = input.petting_intensity.clamp(0.0, 1.0);
+        // Smooth gating as well as tracking: starting a walk or closing the eyes must
+        // not drop the last live head/neck offsets in one frame.
+        let gaze_alpha = 1.0 - (-dt_sec * 18.0).exp();
+        for (value, target) in [
+            (&mut self.head_yaw, input.head_yaw),
+            (&mut self.head_pitch, input.head_pitch),
+            (&mut self.neck_yaw, input.neck_yaw),
+            (&mut self.neck_pitch, input.neck_pitch),
+            (&mut self.chest_yaw, input.chest_yaw),
+            (&mut self.petting_intensity, input.petting_intensity.clamp(0.0, 1.0)),
+        ] {
+            *value += (target - *value) * gaze_alpha;
+        }
+        let eye_alpha = 1.0 - (-dt_sec * 32.0).exp();
+        for (value, target) in self.eyes.iter_mut().zip(input.eyes) {
+            *value += (target - *value) * eye_alpha;
+        }
+        self.life.step(
+            dt_sec,
+            input.target_pose == "idle"
+                && !input.walking
+                && !input.cursor_attention
+                && input.harness_mood.is_none(),
+            input.harness_mood,
+            input.eyes_closed,
+        );
     }
 
     pub fn evaluate(&self, forced_preview: bool) -> EvaluatedPose {
@@ -576,6 +606,15 @@ impl PoseBlender {
             bone_names.insert(b);
         }
 
+        if !forced_preview {
+            if self.eyes.iter().any(|x| x.abs() > 1e-4) {
+                bone_names.extend(["leftEye", "rightEye"]);
+            }
+            if self.life.offset("leftShoulder")[2].abs() > 1e-4 {
+                bone_names.extend(["leftShoulder", "rightShoulder"]);
+            }
+        }
+
         let petting_roll = if self.petting_intensity > 1e-3 && !forced_preview {
             (self.total_time_sec * 4.2).sin() * 0.09 * self.petting_intensity
         } else {
@@ -595,17 +634,16 @@ impl PoseBlender {
                     "head" => [self.head_pitch, self.head_yaw, petting_roll],
                     "neck" => [self.neck_pitch, self.neck_yaw, 0.0],
                     "chest" => [0.0, self.chest_yaw, 0.0],
+                    "leftEye" | "rightEye" => [self.eyes[0], self.eyes[1], 0.0],
                     _ => [0.0; 3],
                 }
             };
-            combined.insert(
-                bone.to_string(),
-                [
-                    base[0] + add[0] * breath_weight + sec[0] * sec_weight + walk[0] + gaze[0],
-                    base[1] + add[1] * breath_weight + sec[1] * sec_weight + walk[1] + gaze[1],
-                    base[2] + add[2] * breath_weight + sec[2] * sec_weight + walk[2] + gaze[2],
-                ],
-            );
+            let accent = if forced_preview { [0.0; 3] } else { self.life.offset(bone) };
+            let rotation = std::array::from_fn(|axis| {
+                base[axis] + add[axis] * breath_weight + sec[axis] * sec_weight
+                    + walk[axis] + gaze[axis] + accent[axis] * sec_weight
+            });
+            combined.insert(bone.to_string(), rotation);
         }
 
         let mut expressions = self.expr_weights.clone();
@@ -614,7 +652,7 @@ impl PoseBlender {
         let auto_blink = if forced_preview {
             0.0
         } else {
-            compute_auto_blink(self.total_time_sec, 3.6, 0.16) * happy_suppress
+            self.life.blink() * happy_suppress
         };
         let pet_squint = if forced_preview {
             0.0
@@ -634,17 +672,6 @@ impl PoseBlender {
             expressions,
         }
     }
-}
-
-pub fn compute_auto_blink(time_sec: f32, period_sec: f32, blink_duration_sec: f32) -> f32 {
-    if time_sec < 0.0 || period_sec <= 0.0 || blink_duration_sec <= 0.0 {
-        return 0.0;
-    }
-    let phase = time_sec % period_sec;
-    if phase > blink_duration_sec {
-        return 0.0;
-    }
-    ((phase / blink_duration_sec) * PI).sin()
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -759,13 +786,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_blink_peaks_at_half_duration_and_stays_zero_outside() {
-        assert!((compute_auto_blink(0.08, 3.6, 0.16) - 1.0).abs() < 1e-5);
-        assert_eq!(compute_auto_blink(1.0, 3.6, 0.16), 0.0);
-        assert_eq!(compute_auto_blink(-0.5, 3.6, 0.16), 0.0);
-    }
-
-    #[test]
     fn walk_cycle_swings_arms_opposite_to_legs_with_non_negative_knees() {
         let (off, bob) = compute_walk_offsets(0.2);
         assert!(off["leftUpperLeg"][0] * off["rightUpperLeg"][0] < 0.0);
@@ -851,6 +871,38 @@ mod tests {
     }
 
     #[test]
+    fn looking_away_fades_when_another_animation_takes_over() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "idle", "neutral", 0);
+        let mut input = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "idle",
+            target_expression: "neutral",
+            head_yaw: 0.25,
+            eyes: [0.0, 0.08],
+            cursor_attention: true,
+            ..Default::default()
+        };
+        for _ in 0..30 {
+            blender.step(input);
+        }
+        let previous = blender.evaluate(false);
+        assert!(previous.pose["head"][1] > 0.2);
+        assert!(previous.pose["leftEye"][1] > 0.07);
+        input.head_yaw = 0.0;
+        input.eyes = [0.0; 2];
+        input.eyes_closed = true;
+        blender.step(input);
+        let first = blender.evaluate(false);
+        assert!(first.pose["head"][1] > previous.pose["head"][1] - 0.075);
+        assert!(first.pose["leftEye"][1] > 0.03);
+        for _ in 0..45 {
+            blender.step(input);
+        }
+        assert!(blender.evaluate(false).pose["head"][1].abs() < 0.02);
+        assert!(!blender.evaluate(false).pose.contains_key("leftEye"));
+    }
+
+    #[test]
     fn pose_blender_transitions_smoothly_without_single_frame_snaps() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../poses.json");
         let poses = load_poses(&path).expect("poses.json should load");
@@ -891,8 +943,7 @@ mod tests {
                     head_pitch: 0.0,
                     neck_yaw: 0.0,
                     neck_pitch: 0.0,
-                    chest_yaw: 0.0,
-                    petting_intensity: 0.0,
+                    ..Default::default()
                 });
                 let eval = blender.evaluate(false);
                 for k in prev_pose.keys().chain(eval.pose.keys()) {

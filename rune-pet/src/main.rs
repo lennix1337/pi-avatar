@@ -7,6 +7,7 @@
 //! Headless PNG snapshots (via Rune's built-in tooling):
 //!   `rune-pet.exe --snap docs/rune-shot-idle.png --scene idle --scale 2`
 
+mod animation;
 mod delight;
 mod harness;
 mod hit_mask;
@@ -219,7 +220,10 @@ impl PetAppState {
             let _ = self.harness.poll();
         }
 
-        let mood_override = self.harness.current().cloned();
+        let mood_override = self
+            .harness
+            .current()
+            .map(|m| (m.mood, m.pose, m.expression, m.eyes_closed));
         if mood_override.is_some() {
             self.pet.notify_user_activity();
         }
@@ -241,20 +245,13 @@ impl PetAppState {
             snap = self.pet.snapshot();
         }
 
-        let target_pose = mood_override
-            .as_ref()
-            .map(|m| m.pose)
-            .unwrap_or(snap.pose);
+        let target_pose = mood_override.map_or(snap.pose, |(_, pose, _, _)| pose);
         let target_expr = if self.delight.happy_boost_sec > 0.0 || self.delight.petting_intensity > 0.35 {
             "happy"
         } else {
-            mood_override
-                .as_ref()
-                .map(|m| m.expression)
-                .unwrap_or(snap.expression)
+            mood_override.map_or(snap.expression, |(_, _, expr, _)| expr)
         };
-        let eyes_closed = mood_override.as_ref().is_some_and(|m| m.eyes_closed)
-            || (mood_override.is_none() && snap.eyes_closed);
+        let eyes_closed = mood_override.map_or(snap.eyes_closed, |(_, _, _, closed)| closed);
         let gaze_active = !snap.walking
             && !eyes_closed
             && !self.drag_active
@@ -276,6 +273,9 @@ impl PetAppState {
             neck_yaw: if gaze_active { self.delight.neck_yaw } else { 0.0 },
             neck_pitch: if gaze_active { self.delight.neck_pitch } else { 0.0 },
             chest_yaw: if gaze_active { self.delight.chest_yaw } else { 0.0 },
+            eyes: if gaze_active { self.delight.eyes } else { [0.0; 2] },
+            cursor_attention: gaze_active && self.delight.cursor_proximity > 0.1,
+            harness_mood: mood_override.map(|(mood, _, _, _)| mood),
             petting_intensity: if !self.drag_active && snap.mode != PetMode::Fall {
                 self.delight.petting_intensity
             } else {

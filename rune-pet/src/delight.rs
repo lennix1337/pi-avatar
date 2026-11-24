@@ -18,6 +18,7 @@ pub struct DelightController {
     pub head_pitch: f32,
     pub neck_yaw: f32,
     pub neck_pitch: f32,
+    pub eyes: [f32; 2], // pitch, yaw (normalized VRM bones)
     pub chest_yaw: f32,
     pub cursor_proximity: f32,
     pub petting_intensity: f32,
@@ -73,10 +74,11 @@ impl DelightController {
             let dy = cy - head_center_px.1;
             let dist = dx.hypot(dy);
             if dist <= 420.0 {
-                let falloff = (1.0 - dist / 420.0).clamp(0.0, 1.0);
+                let edge = ((420.0 - dist) / 220.0).clamp(0.0, 1.0);
+                let falloff = edge * edge * (3.0 - 2.0 * edge);
                 let prox = (1.0 - dist / 240.0).clamp(0.0, 1.0);
-                let yaw = ((dx / 240.0).clamp(-1.0, 1.0) * 0.42) * (0.45 + 0.55 * falloff);
-                let pitch = ((dy / 240.0).clamp(-1.0, 1.0) * 0.24) * (0.45 + 0.55 * falloff);
+                let yaw = (dx / 240.0).clamp(-1.0, 1.0) * 0.42 * falloff;
+                let pitch = (dy / 240.0).clamp(-1.0, 1.0) * 0.24 * falloff;
                 (yaw, pitch, prox)
             } else {
                 (0.0, 0.0, 0.0)
@@ -96,6 +98,15 @@ impl DelightController {
         self.head_pitch += (target_head_pitch - self.head_pitch) * lerp;
         self.neck_yaw += (target_neck_yaw - self.neck_yaw) * (dt * 6.0).min(1.0);
         self.neck_pitch += (target_neck_pitch - self.neck_pitch) * (dt * 6.0).min(1.0);
+        // The eyes acquire the target first, and recenter as the head catches up.
+        let eyes_alpha = 1.0 - (-dt * 22.0).exp();
+        let eye_target = [
+            (target_pitch - self.head_pitch - self.neck_pitch).clamp(-0.10, 0.10),
+            (target_yaw - self.head_yaw - self.neck_yaw).clamp(-0.14, 0.14),
+        ];
+        for (angle, target) in self.eyes.iter_mut().zip(eye_target) {
+            *angle += (target - *angle) * eyes_alpha;
+        }
         self.chest_yaw += (target_chest_yaw - self.chest_yaw) * (dt * 4.5).min(1.0);
         self.cursor_proximity += (target_prox - self.cursor_proximity) * (dt * 5.0).min(1.0);
 
@@ -126,7 +137,7 @@ impl DelightController {
                         self.pat_flips = 0;
                         self.last_pat_dir = 0;
                         self.petting_intensity = (self.petting_intensity - dt * 4.0).max(0.0);
-                    } else if step_dist >= 0.8 && (10.0..=360.0).contains(&speed) {
+                    } else if (10.0..=360.0).contains(&speed) {
                         gentle_motion = true;
                         self.pet_idle_sec = 0.0;
                         self.pet_travel_dip += step_dist;
@@ -252,6 +263,39 @@ mod tests {
             d.update(0.016, Some((900.0, 900.0)), head, true);
         }
         assert!(d.head_yaw.abs() < 0.05, "gaze should relax: yaw={}", d.head_yaw);
+    }
+
+    #[test]
+    fn eyes_lead_the_head_and_recenter_after_it_catches_up() {
+        let mut d = DelightController::new();
+        let cursor = Some((180.0, -80.0));
+        d.update(1.0 / 60.0, cursor, (0.0, 0.0), true);
+        assert!(d.eyes[1] > d.head_yaw && d.eyes[0] < 0.0);
+        for _ in 0..90 {
+            d.update(1.0 / 60.0, cursor, (0.0, 0.0), true);
+        }
+        assert!(d.head_yaw > 0.1);
+        assert!(d.eyes[1].abs() < 0.005);
+    }
+
+    #[test]
+    fn distant_gaze_fades_out_before_the_tracking_radius_ends() {
+        let mut d = DelightController::new();
+        for _ in 0..90 {
+            d.update(1.0 / 60.0, Some((410.0, 0.0)), (0.0, 0.0), true);
+        }
+        assert!(d.head_yaw.abs() < 0.01, "distant yaw={}", d.head_yaw);
+    }
+
+    #[test]
+    fn slow_pixel_steps_still_count_at_high_dpi() {
+        let mut d = DelightController::new();
+        let head = (110.0, 90.0);
+        for pixel in 0..24 {
+            let x = 104.0 + pixel as f32 / 1.5;
+            d.update(1.0 / 60.0, Some((x, 90.0)), head, true);
+        }
+        assert!(d.petting_intensity > 0.7, "petting={}", d.petting_intensity);
     }
 
     #[test]
