@@ -36,6 +36,12 @@ cargo build --release
 # cenas: idle, walk, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat
 ```
 
+No modo ocioso, o pet alterna olhares laterais e pequenos suspiros. Ao aproximar o cursor,
+os olhos reagem primeiro e a cabeça acompanha; carícias lentas também contam em telas com DPI alto.
+O piscar varia de ritmo, às vezes vem em dobro, e dá lugar aos olhos fechados no sono.
+Ao mudar o humor do harness, o pet faz um gesto breve: abaixa a cabeça com o CI vermelho,
+se anima com um PR mesclado ou acena com a cabeça quando está trabalhando ou precisa da sua atenção.
+
 ## Métricas medidas (Windows, NVIDIA GeForce RTX 4070 SUPER, DX12, pet sozinho, 25 s)
 
 | | Antes (v1) | Depois (v2) |

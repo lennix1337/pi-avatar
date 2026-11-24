@@ -5,11 +5,19 @@ use std::collections::HashMap;
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClickZone {
+    Head,
+    Body,
+    Feet,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Capsule2D {
     pub a: Vec2,
     pub b: Vec2,
     pub radius: f32,
+    pub zone: ClickZone,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,27 +74,28 @@ impl AvatarHitMask {
                 a: hc + Vec2::new(0.0, -0.02),
                 b: hc + Vec2::new(0.0, 0.045),
                 radius: 0.085,
+                zone: ClickZone::Head,
             });
         }
-        let mut push_seg = |a_name: &str, b_name: &str, radius: f32| {
+        let mut push_seg = |a_name: &str, b_name: &str, radius: f32, zone: ClickZone| {
             if let (Some(&a), Some(&b)) = (map.get(a_name), map.get(b_name)) {
-                capsules.push(Capsule2D { a, b, radius });
+                capsules.push(Capsule2D { a, b, radius, zone });
             }
         };
 
         // Torso / shirt / shorts
-        push_seg("neck", "hips", 0.095);
-        push_seg("chest", "hips", 0.105);
+        push_seg("neck", "hips", 0.095, ClickZone::Body);
+        push_seg("chest", "hips", 0.105, ClickZone::Body);
         // Arms & hands
-        push_seg("leftUpperArm", "leftLowerArm", 0.052);
-        push_seg("leftLowerArm", "leftHand", 0.048);
-        push_seg("rightUpperArm", "rightLowerArm", 0.052);
-        push_seg("rightLowerArm", "rightHand", 0.048);
+        push_seg("leftUpperArm", "leftLowerArm", 0.052, ClickZone::Body);
+        push_seg("leftLowerArm", "leftHand", 0.048, ClickZone::Body);
+        push_seg("rightUpperArm", "rightLowerArm", 0.052, ClickZone::Body);
+        push_seg("rightLowerArm", "rightHand", 0.048, ClickZone::Body);
         // Legs & shoes
-        push_seg("leftUpperLeg", "leftLowerLeg", 0.055);
-        push_seg("leftLowerLeg", "leftFoot", 0.052);
-        push_seg("rightUpperLeg", "rightLowerLeg", 0.055);
-        push_seg("rightLowerLeg", "rightFoot", 0.052);
+        push_seg("leftUpperLeg", "leftLowerLeg", 0.055, ClickZone::Body);
+        push_seg("leftLowerLeg", "leftFoot", 0.052, ClickZone::Feet);
+        push_seg("rightUpperLeg", "rightLowerLeg", 0.055, ClickZone::Body);
+        push_seg("rightLowerLeg", "rightFoot", 0.052, ClickZone::Feet);
 
         Self {
             capsules,
@@ -96,9 +105,26 @@ impl AvatarHitMask {
         }
     }
 
-    pub fn hit_test(&self, nx: f32, ny: f32) -> bool {
+    pub fn hit_zone(&self, nx: f32, ny: f32) -> Option<ClickZone> {
         if !(0.0..=1.0).contains(&nx) || !(0.0..=1.0).contains(&ny) {
-            return false;
+            return None;
+        }
+        let scale = Vec2::new(self.aspect.max(0.2), 1.0);
+        let p = Vec2::new(nx, ny) * scale;
+        let mut best: Option<ClickZone> = None;
+        for c in &self.capsules {
+            let a = c.a * scale;
+            let b = c.b * scale;
+            if dist_sq_point_segment(p, a, b) <= c.radius * c.radius {
+                best = match (best, c.zone) {
+                    (Some(ClickZone::Head), _) | (_, ClickZone::Head) => Some(ClickZone::Head),
+                    (Some(ClickZone::Body), _) | (_, ClickZone::Body) => Some(ClickZone::Body),
+                    (_, ClickZone::Feet) => Some(ClickZone::Feet),
+                };
+            }
+        }
+        if best.is_some() {
+            return best;
         }
         if let Some([x0, y0, x1, y1]) = self.bubble_rect
             && nx >= x0
@@ -106,18 +132,13 @@ impl AvatarHitMask {
             && ny >= y0
             && ny <= y1
         {
-            return true;
+            return Some(ClickZone::Head);
         }
-        let scale = Vec2::new(self.aspect.max(0.2), 1.0);
-        let p = Vec2::new(nx, ny) * scale;
-        for c in &self.capsules {
-            let a = c.a * scale;
-            let b = c.b * scale;
-            if dist_sq_point_segment(p, a, b) <= c.radius * c.radius {
-                return true;
-            }
-        }
-        false
+        None
+    }
+
+    pub fn hit_test(&self, nx: f32, ny: f32) -> bool {
+        self.hit_zone(nx, ny).is_some()
     }
 
     pub fn head_center(&self) -> Option<Vec2> {
@@ -184,9 +205,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn sample_camera(aspect: f32) -> Mat4 {
-        let proj = Mat4::perspective_rh(32.0f32.to_radians(), aspect, 0.1, 30.0);
-        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.96, 3.85), Vec3::new(0.0, 0.96, 0.0), Vec3::Y);
-        proj * view
+        crate::renderer::pet_camera_view_proj(aspect)
     }
 
     #[test]
@@ -228,6 +247,7 @@ mod tests {
                 a: Vec2::new(0.5, 0.3),
                 b: Vec2::new(0.5, 0.8),
                 radius: 0.12,
+                zone: ClickZone::Body,
             }],
             bubble_rect: None,
             aspect: 220.0 / 280.0,
@@ -242,5 +262,34 @@ mod tests {
         // Speech bubble rect also accepts hits
         mask.bubble_rect = Some([0.1, 0.02, 0.9, 0.14]);
         assert_eq!(ctrl.update(Some((0.5, 0.08)), false, &mask), Some(false));
+    }
+
+    #[test]
+    fn hit_zone_classifies_head_body_feet_and_keeps_corners_click_through() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let vrm = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
+        let poses = load_poses(&root.join("poses.json")).unwrap();
+        let aspect = 220.0 / 280.0;
+        let vp = sample_camera(aspect);
+        let bone_pos = vrm.evaluate_humanoid_world_positions(&poses["idle"], 0.0, 0.0);
+        let mask = AvatarHitMask::from_world_bones(&bone_pos, vp, aspect, None);
+
+        let head = mask.head_center().expect("head center present");
+        assert_eq!(mask.hit_zone(head.x, head.y), Some(ClickZone::Head));
+        assert_eq!(mask.hit_zone(0.5, 0.52), Some(ClickZone::Body));
+        assert_eq!(mask.hit_zone(0.5, 0.88), Some(ClickZone::Feet));
+        assert_eq!(mask.hit_zone(0.05, 0.05), None);
+        assert_eq!(mask.hit_zone(0.95, 0.92), None);
+
+        // Verify click-through outside avatar silhouette remains intact across all new poses
+        for pose_name in ["carry", "fall", "land", "jump", "stretch", "sleep", "sleep_sit", "react"] {
+            let bp = vrm.evaluate_humanoid_world_positions(&poses[pose_name], 0.0, 0.0);
+            let m = AvatarHitMask::from_world_bones(&bp, vp, aspect, None);
+            assert!(!m.hit_test(0.04, 0.04), "{pose_name}: top-left must stay click-through");
+            assert!(!m.hit_test(0.96, 0.04), "{pose_name}: top-right must stay click-through");
+            assert!(!m.hit_test(0.04, 0.95), "{pose_name}: bottom-left must stay click-through");
+            assert!(!m.hit_test(0.96, 0.95), "{pose_name}: bottom-right must stay click-through");
+            assert!(m.hit_test(0.5, 0.50), "{pose_name}: torso center must remain interactive");
+        }
     }
 }

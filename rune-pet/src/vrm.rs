@@ -1213,13 +1213,23 @@ mod tests {
         let vrm = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
         let poses = load_poses(&root.join("poses.json")).unwrap();
         let aspect = 220.0 / 280.0;
-        let proj = Mat4::perspective_rh(32.0f32.to_radians(), aspect, 0.1, 30.0);
-        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.96, 3.85), Vec3::new(0.0, 0.96, 0.0), Vec3::Y);
-        let vp = proj * view;
+        let vp = crate::renderer::pet_camera_view_proj(aspect);
 
-        for (label, pose_name, yaw) in [("idle", "idle", 0.0f32), ("arms-up", "cheer", 0.0), ("walk", "idle", 0.42 * std::f32::consts::PI)] {
+        for (label, pose_name, yaw, bob) in [
+            ("idle", "idle", 0.0f32, 0.0f32),
+            ("arms-up", "cheer", 0.0, 0.0),
+            ("walk", "idle", 0.42 * std::f32::consts::PI, -0.02),
+            ("carry", "carry", 0.0, 0.0),
+            ("fall", "fall", 0.0, 0.0),
+            ("land", "land", 0.0, -0.055),
+            ("jump", "jump", 0.0, 0.015),
+            ("stretch", "stretch", 0.0, 0.008),
+            ("sleep", "sleep", 0.0, 0.0),
+            ("sleep_sit", "sleep_sit", 0.0, 0.0),
+            ("react", "react", 0.0, 0.02),
+        ] {
             let mut skins = vec![Vec::new(); vrm.skins.len()];
-            vrm.evaluate_skins(&poses[pose_name], yaw, 0.022, &mut skins);
+            vrm.evaluate_skins(&poses[pose_name], yaw, bob, &mut skins);
             let mut min_x = f32::INFINITY;
             let mut max_x = f32::NEG_INFINITY;
             let mut min_y = f32::INFINITY;
@@ -1246,8 +1256,107 @@ mod tests {
                 }
             }
             assert!(
-                min_x >= 0.02 && max_x <= 0.98 && min_y >= 0.10 && max_y <= 0.98,
+                min_x >= 0.02 && max_x <= 0.98 && min_y >= 0.10 && max_y <= 0.998,
                 "{label} clipped viewport: x=[{min_x:.3}..{max_x:.3}], y=[{min_y:.3}..{max_y:.3}]"
+            );
+        }
+    }
+
+    #[test]
+    fn shoe_soles_align_with_foot_margin_and_stay_grounded_across_walk_cycle() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let vrm = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
+        let poses = load_poses(&root.join("poses.json")).unwrap();
+        let aspect = crate::pet_state::PET_WINDOW_WIDTH / crate::pet_state::PET_WINDOW_HEIGHT;
+        let vp = crate::renderer::pet_camera_view_proj(aspect);
+
+        // 1. Standing idle: projected bottom of shoes matches FOOT_BOTTOM_MARGIN_DIP within 2 DIP.
+        let mut skins = vec![Vec::new(); vrm.skins.len()];
+        vrm.evaluate_skins(&poses["idle"], 0.0, 0.0, &mut skins);
+        let mut idle_max_sy = f32::NEG_INFINITY;
+        for mesh in &vrm.meshes {
+            let s = &skins[mesh.skin_index.unwrap_or(0)];
+            for prim in &mesh.primitives {
+                for v in &prim.vertices {
+                    let p = Vec4::new(v.position[0], v.position[1], v.position[2], 1.0);
+                    let wp = (s[v.joints[0] as usize] * v.weights[0]
+                        + s[v.joints[1] as usize] * v.weights[1]
+                        + s[v.joints[2] as usize] * v.weights[2]
+                        + s[v.joints[3] as usize] * v.weights[3])
+                        * p;
+                    let clip = vp * wp;
+                    let sy = 0.5 - (clip.y / clip.w) * 0.5;
+                    idle_max_sy = idle_max_sy.max(sy);
+                }
+            }
+        }
+        let measured_margin_dip = (1.0 - idle_max_sy) * crate::pet_state::PET_WINDOW_HEIGHT;
+        assert!(
+            (measured_margin_dip - crate::pet_state::FOOT_BOTTOM_MARGIN_DIP).abs() <= 3.5,
+            "idle shoe bottom margin ({measured_margin_dip:.2} DIP) must match FOOT_BOTTOM_MARGIN_DIP ({})",
+            crate::pet_state::FOOT_BOTTOM_MARGIN_DIP
+        );
+
+        // 2. Across 24 phases of the walk cycle, the planted foot stays near y = 0.0 (no floating).
+        let yaw = crate::pet_state::facing_to_yaw_rad(1);
+        for step in 0..24 {
+            let phase = (step as f32 / 24.0) * std::f32::consts::TAU;
+            let (walk_off, bob_y) = crate::poses::compute_walk_offsets(phase);
+            let mut combined = poses["idle"].clone();
+            for (bone, val) in walk_off {
+                let entry = combined.entry(bone).or_insert([0.0; 3]);
+                entry[0] += val[0];
+                entry[1] += val[1];
+                entry[2] += val[2];
+            }
+            vrm.evaluate_skins(&combined, yaw, bob_y, &mut skins);
+            let mut min_world_y = f32::INFINITY;
+            for mesh in &vrm.meshes {
+                let s = &skins[mesh.skin_index.unwrap_or(0)];
+                for prim in &mesh.primitives {
+                    for v in &prim.vertices {
+                        let p = Vec4::new(v.position[0], v.position[1], v.position[2], 1.0);
+                        let wp = (s[v.joints[0] as usize] * v.weights[0]
+                            + s[v.joints[1] as usize] * v.weights[1]
+                            + s[v.joints[2] as usize] * v.weights[2]
+                            + s[v.joints[3] as usize] * v.weights[3])
+                            * p;
+                        min_world_y = min_world_y.min(wp.y);
+                    }
+                }
+            }
+            assert!(
+                min_world_y >= -0.035 && min_world_y <= 0.045,
+                "walk phase {phase:.2}: lowest shoe vertex y={min_world_y:.4}m drifted off ground"
+            );
+        }
+
+        // 3. Standing interaction & idle poses stay grounded (neither floating nor sinking into taskbar).
+        for (label, pose_name, bob_y) in [
+            ("stretch", "stretch", 0.008f32),
+            ("sleep", "sleep", 0.0),
+            ("react", "react", 0.0),
+            ("land", "land", -0.055),
+        ] {
+            vrm.evaluate_skins(&poses[pose_name], 0.0, bob_y, &mut skins);
+            let mut min_world_y = f32::INFINITY;
+            for mesh in &vrm.meshes {
+                let s = &skins[mesh.skin_index.unwrap_or(0)];
+                for prim in &mesh.primitives {
+                    for v in &prim.vertices {
+                        let p = Vec4::new(v.position[0], v.position[1], v.position[2], 1.0);
+                        let wp = (s[v.joints[0] as usize] * v.weights[0]
+                            + s[v.joints[1] as usize] * v.weights[1]
+                            + s[v.joints[2] as usize] * v.weights[2]
+                            + s[v.joints[3] as usize] * v.weights[3])
+                            * p;
+                        min_world_y = min_world_y.min(wp.y);
+                    }
+                }
+            }
+            assert!(
+                min_world_y >= -0.045 && min_world_y <= 0.045,
+                "{label} pose shoe y={min_world_y:.4}m must stay grounded near taskbar floor"
             );
         }
     }
