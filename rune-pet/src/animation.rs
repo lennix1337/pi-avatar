@@ -60,6 +60,19 @@ fn mood_accent(mood: Option<HarnessMood>, age: f32) -> Accent {
     }
 }
 
+// A held attitude is separate from the one-shot entrance gesture.
+fn mood_posture(mood: Option<HarnessMood>) -> (Accent, [f32; 2]) {
+    let (head, chest_pitch, shoulder_lift, brows, softness) = match mood {
+        Some(HarnessMood::Worried) => ([0.07, 0.0, -0.085], 0.06, 0.038, 0.18, 0.0),
+        Some(HarnessMood::Celebrate) => ([-0.07, 0.0, 0.052], -0.06, 0.051, 0.0, 0.06),
+        Some(HarnessMood::Working) => ([0.055, 0.0, 0.018], 0.075, 0.0, 0.10, 0.0),
+        Some(HarnessMood::Wave) => ([-0.028, 0.0, 0.10], -0.02, 0.027, 0.0, 0.08),
+        Some(HarnessMood::Sleep) => ([0.13, 0.0, -0.07], 0.07, -0.02, 0.0, 0.12),
+        None => return (Accent::default(), [0.0; 2]),
+    };
+    (Accent { head, chest_pitch, shoulder_lift }, [brows, softness])
+}
+
 // Asymmetric closure: quick downstroke, a very short hold, and slower reopening. A few
 // irregular intervals and an occasional double blink avoid a fixed metronome rhythm.
 const BLINK_GAPS: [f32; 9] = [3.3, 4.7, 2.6, 0.36, 5.2, 3.9, 2.85, 4.4, 5.55];
@@ -77,6 +90,8 @@ pub(crate) struct AnimationLife {
     blink_age: f32,
     blink_index: usize,
     accent: Accent,
+    posture: Accent,
+    face: [f32; 2],
 }
 
 impl Default for AnimationLife {
@@ -91,6 +106,8 @@ impl Default for AnimationLife {
             blink_age: BLINK_END,
             blink_index: 0,
             accent: Accent::default(),
+            posture: Accent::default(),
+            face: [0.0; 2],
         }
     }
 }
@@ -124,6 +141,12 @@ impl AnimationLife {
             mood_accent(mood, self.mood_age)
         };
         self.accent.follow(target, 1.0 - (-dt * 13.0).exp());
+        let (posture, face) = mood_posture(mood);
+        let alpha = 1.0 - (-dt * 6.0).exp();
+        self.posture.follow(posture, alpha);
+        for (weight, target) in self.face.iter_mut().zip(face) {
+            *weight += (target - *weight) * alpha;
+        }
     }
 
     pub(crate) fn step_landing(&mut self, dt: f32, landing: bool) {
@@ -143,6 +166,10 @@ impl AnimationLife {
         close * open
     }
 
+    pub(crate) fn mood_face(&self) -> [f32; 2] {
+        self.face
+    }
+
     pub(crate) fn offset(&self, bone: &str) -> [f32; 3] {
         let (compression, rebound) = if self.landing_age < 0.47 {
             (gesture(self.landing_age, 0.0, 0.09, 0.16), gesture(self.landing_age, 0.19, 0.10, 0.17))
@@ -150,10 +177,14 @@ impl AnimationLife {
             (0.0, 0.0)
         };
         match bone {
-            "head" => [self.accent.head[0] + 0.07 * compression - 0.052 * rebound, self.accent.head[1], self.accent.head[2]],
-            "chest" => [self.accent.chest_pitch + 0.092 * compression - 0.028 * rebound, 0.0, 0.0],
-            "leftShoulder" => [0.0, 0.0, self.accent.shoulder_lift],
-            "rightShoulder" => [0.0, 0.0, -self.accent.shoulder_lift],
+            "head" => [
+                self.accent.head[0] + self.posture.head[0] + 0.07 * compression - 0.052 * rebound,
+                self.accent.head[1] + self.posture.head[1],
+                self.accent.head[2] + self.posture.head[2],
+            ],
+            "chest" => [self.accent.chest_pitch + self.posture.chest_pitch + 0.092 * compression - 0.028 * rebound, 0.0, 0.0],
+            "leftShoulder" => [0.0, 0.0, self.accent.shoulder_lift + self.posture.shoulder_lift],
+            "rightShoulder" => [0.0, 0.0, -self.accent.shoulder_lift - self.posture.shoulder_lift],
             _ => [0.0; 3],
         }
     }
@@ -205,10 +236,11 @@ mod tests {
         for _ in 0..250 {
             life.step(0.016, false, Some(HarnessMood::Celebrate), false);
         }
-        assert!(life.offset("head")[0].abs() < 0.001);
+        let held = life.offset("head")[0];
+        assert!(held < -0.04);
         for _ in 0..100 {
             life.step(0.016, false, Some(HarnessMood::Celebrate), false);
-            assert!(life.offset("head")[0].abs() < 0.001);
+            assert!((life.offset("head")[0] - held).abs() < 0.001);
         }
     }
 

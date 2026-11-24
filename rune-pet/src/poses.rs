@@ -648,6 +648,14 @@ impl PoseBlender {
         }
 
         let mut expressions = self.expr_weights.clone();
+        if !forced_preview {
+            let [brows, softness] = self.life.mood_face();
+            for (name, accent) in [("angry", brows), ("relaxed", softness)] {
+                if let Some(weight) = expressions.get_mut(name) {
+                    *weight = (*weight + accent).min(1.0);
+                }
+            }
+        }
         let happy = expressions.get("happy").copied().unwrap_or(0.0);
         let happy_suppress = 1.0 - smoothstep(0.25, 0.65, happy);
         let auto_blink = if forced_preview {
@@ -869,6 +877,32 @@ mod tests {
                 "pose '{pose_name}' secondary motion should animate smoothly (diff={max_diff})"
             );
         }
+    }
+
+    #[test]
+    fn worried_mood_keeps_posture_and_tension_after_the_entry_beat() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "think", "sad", 0);
+        let worried = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "think",
+            target_expression: "sad",
+            harness_mood: Some(HarnessMood::Worried),
+            ..Default::default()
+        };
+        for _ in 0..240 {
+            blender.step(worried);
+        }
+        let eval = blender.evaluate(false);
+        assert!(eval.expressions["sad"] > 0.7);
+        assert!(eval.expressions["angry"] > 0.10, "sustained brow tension");
+        assert!(eval.pose["head"][2] < -0.05, "sustained head tilt");
+        let clear = BlenderInput { harness_mood: None, ..worried };
+        blender.step(clear);
+        assert!(blender.evaluate(false).expressions["angry"] > 0.10);
+        for _ in 0..60 {
+            blender.step(clear);
+        }
+        assert!(blender.evaluate(false).expressions["angry"] < 0.005);
     }
 
     #[test]

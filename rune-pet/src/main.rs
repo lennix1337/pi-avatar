@@ -812,7 +812,18 @@ fn scene_arms_up(s: &mut PetAppState) {
 
 fn scene_mood_worried(s: &mut PetAppState) {
     let m = mood_preset(HarnessMood::Worried, 0);
+    let input = BlenderInput {
+        dt_sec: 1.0 / 60.0,
+        target_pose: m.pose,
+        target_expression: m.expression,
+        harness_mood: Some(m.mood),
+        ..Default::default()
+    };
     s.apply_scene_preview(m.pose, m.expression, false, 0, 0.0, Some(m));
+    s.preview_motion = true;
+    for _ in 0..240 {
+        s.blender.step(input);
+    }
 }
 
 fn scene_mood_celebrate(s: &mut PetAppState) {
