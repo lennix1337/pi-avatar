@@ -35,7 +35,7 @@ cargo build --release
 
 # Capturas PNG headless usando o tooling nativo do Rune (--snap + --scene)
 .\target\release\pi-avatar.exe --snap docs\rune-shot-idle.png --scene idle --scale 2
-# cenas: idle, walk, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat
+# cenas: idle, walk, landing, drowsy, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat
 ```
 
 A versão release do Windows abre sem console e fica acessível pelo ícone **Pi Avatar**
@@ -51,6 +51,8 @@ os olhos reagem primeiro e a cabeça acompanha; carícias lentas também contam 
 O piscar varia de ritmo, às vezes vem em dobro, e dá lugar aos olhos fechados no sono.
 Ao mudar o humor do harness, o pet faz um gesto breve: abaixa a cabeça com o CI vermelho,
 se anima com um PR mesclado ou acena com a cabeça quando está trabalhando ou precisa da sua atenção.
+
+Em modo automático, a pose ociosa fica sonolenta após um período de inatividade no Windows, mais cedo à noite. O avatar consulta apenas o tempo agregado desde a última atividade e a hora local; não recebe eventos de teclado nem guarda ou envia esses sinais. A expressão cede ao olhar, ao carinho e aos humores do harness. As cenas headless e os modos forçados não consultam esses sinais.
 
 ## Métricas medidas (Windows, NVIDIA GeForce RTX 4070 SUPER, DX12, pet sozinho, 25 s)
 

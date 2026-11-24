@@ -11,7 +11,9 @@ mod imp {
     use super::{Rect, WindowCandidate};
     use crate::pet_state::is_valid_sit_target;
     use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SYSTEMTIME, WPARAM};
+    use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GetTickCount};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
     };
@@ -258,6 +260,20 @@ mod imp {
                     scale,
                 )
             }
+        }
+    }
+
+    /// Aggregate idle time on this session and local hour; never receives input events.
+    pub fn local_idle_and_hour() -> Option<(u32, u16)> {
+        let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        let mut time = SYSTEMTIME::default();
+        unsafe {
+            if GetLastInputInfo(&mut info) == 0 {
+                return None;
+            }
+            GetLocalTime(&mut time);
+            let elapsed = GetTickCount().wrapping_sub(info.dwTime);
+            Some((if elapsed <= i32::MAX as u32 { elapsed / 1000 } else { 0 }, time.wHour))
         }
     }
 
@@ -598,6 +614,10 @@ mod imp {
         )
     }
 
+    pub fn local_idle_and_hour() -> Option<(u32, u16)> {
+        None
+    }
+
     pub fn cursor_position_px() -> Option<(i32, i32)> {
         None
     }
@@ -636,6 +656,7 @@ mod imp {
 
 pub use imp::{
     TimerResolutionGuard, apply_tool_window_style, cursor_position_px, ensure_dpi_awareness,
-    find_sit_candidates, monitor_work_area_and_scale_at, primary_work_area, process_working_set_mb,
+    find_sit_candidates, local_idle_and_hour, monitor_work_area_and_scale_at, primary_work_area,
+    process_working_set_mb,
     query_window_candidate, window_rect_px, window_work_area_and_scale,
 };
