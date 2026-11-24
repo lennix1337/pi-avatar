@@ -1,0 +1,4 @@
+# Assets do Rune Desktop Pet
+
+- `../models/avatar.vrm`: cópia exata de `VRM1_Constraint_Twist_Sample.vrm`, do projeto [pixiv/three-vrm](https://github.com/pixiv/three-vrm/blob/dev/packages/three-vrm/examples/models/VRM1_Constraint_Twist_Sample.vrm). Autor: pixiv Inc., copyright 2022. O hash Git do arquivo é `8ee8717df1af676c4ab89c2344d5bcd907d039f9`, igual ao do upstream consultado. As 19 imagens PNG, incluindo texturas e miniatura, estão embutidas nesse mesmo VRM; não há arquivos de textura externos distribuídos com o pet.
+- O repositório upstream tem licença MIT; a cópia do aviso está em `../models/avatar.vrm.LICENSE.txt`. O próprio modelo também declara [VRM Public License 1.0](https://vrm.dev/licenses/1.0/), com redistribuição, modificação e uso comercial por empresas permitidos; suas demais condições permanecem aplicáveis. Não substituir essas informações pelo aviso MIT sem preservar os metadados do modelo.

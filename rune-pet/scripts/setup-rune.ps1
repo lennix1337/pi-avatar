@@ -31,5 +31,8 @@ git -C $TargetDir sparse-checkout set `
     vendor/parley_engine `
     vendor/sctk-adwaita `
     vendor/tiny-skia-path
+git -C $TargetDir fetch --depth 1 origin $Rev
+if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the pinned Rune revision' }
 git -C $TargetDir checkout $Rev
+if ($LASTEXITCODE -ne 0) { throw 'Could not check out the pinned Rune revision' }
 Write-Host "Rune sparse cache ready at $TargetDir ($Rev)"

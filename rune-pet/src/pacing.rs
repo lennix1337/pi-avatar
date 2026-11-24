@@ -1,6 +1,11 @@
 //! Deterministic 60 FPS frame pacer and FPS statistics calculator (`avg`, `min`, `p5`).
 
+use std::collections::VecDeque;
 use std::time::Duration;
+
+// Keep at most one hour of frame intervals at 60 FPS. Percentiles and minimum
+// cover this recent window; average and frame count still cover the entire run.
+const MAX_FPS_SAMPLES: usize = 216_000;
 
 pub const TARGET_FPS: f64 = 60.0;
 pub const TARGET_FRAME_SEC: f64 = 1.0 / TARGET_FPS;
@@ -90,7 +95,7 @@ pub struct FpsTracker {
     start_sec: Option<f64>,
     measure_start_sec: Option<f64>,
     last_frame_sec: Option<f64>,
-    dt_samples_sec: Vec<f64>,
+    dt_samples_sec: VecDeque<f64>,
     frames: u64,
 }
 
@@ -101,7 +106,7 @@ impl FpsTracker {
             start_sec: None,
             measure_start_sec: None,
             last_frame_sec: None,
-            dt_samples_sec: Vec::with_capacity(2048),
+            dt_samples_sec: VecDeque::with_capacity(2048),
             frames: 0,
         }
     }
@@ -120,7 +125,10 @@ impl FpsTracker {
         if let Some(prev) = self.last_frame_sec {
             let dt = now_sec - prev;
             if dt > 1e-6 {
-                self.dt_samples_sec.push(dt);
+                if self.dt_samples_sec.len() == MAX_FPS_SAMPLES {
+                    self.dt_samples_sec.pop_front();
+                }
+                self.dt_samples_sec.push_back(dt);
             }
         }
         self.last_frame_sec = Some(now_sec);
@@ -140,7 +148,7 @@ impl FpsTracker {
             };
         }
         let avg_fps = (self.frames.saturating_sub(1)) as f64 / duration_sec;
-        let mut sorted = self.dt_samples_sec.clone();
+        let mut sorted: Vec<_> = self.dt_samples_sec.iter().copied().collect();
         sorted.sort_by(|x, y| x.total_cmp(y));
         let max_dt = *sorted.last().unwrap_or(&TARGET_FRAME_SEC);
         let p95_idx = (((sorted.len() - 1) as f64) * 0.95).round() as usize;
@@ -181,6 +189,16 @@ mod tests {
         assert!(s.avg_fps >= 55.0, "expected avg_fps >= 55, got {}", s.avg_fps);
         assert!(s.p5_fps >= 50.0, "expected p5_fps >= 50, got {}", s.p5_fps);
         assert!(s.min_fps >= 50.0, "expected min_fps >= 50, got {}", s.min_fps);
+    }
+
+    #[test]
+    fn tracker_samples_are_bounded_for_long_running_pet() {
+        let mut tracker = FpsTracker::new(0.0);
+        for i in 0..220_000 {
+            tracker.record_frame(i as f64 / 60.0);
+        }
+        assert!(tracker.dt_samples_sec.len() <= 216_000, "frame samples grow without bound");
+        assert_eq!(tracker.summary().frames, 220_000);
     }
 
     #[test]

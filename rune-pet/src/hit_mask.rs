@@ -135,6 +135,23 @@ impl ClickThroughController {
         Self::default()
     }
 
+    pub fn apply<E>(
+        &mut self,
+        cursor_norm: Option<(f32, f32)>,
+        dragging: bool,
+        mask: &AvatarHitMask,
+        set: impl FnOnce(bool) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let previous = self.click_through;
+        if let Some(desired) = self.update(cursor_norm, dragging, mask)
+            && let Err(error) = set(desired)
+        {
+            self.click_through = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Returns `Some(new_click_through)` only when the Win32 `WS_EX_TRANSPARENT` state must change.
     pub fn update(
         &mut self,
@@ -188,6 +205,20 @@ mod tests {
         assert!(!mask.hit_test(0.95, 0.05), "top-right corner must be click-through");
         assert!(!mask.hit_test(0.05, 0.92), "bottom-left corner must be click-through");
         assert!(!mask.hit_test(0.95, 0.92), "bottom-right corner must be click-through");
+    }
+
+    #[test]
+    fn failed_click_through_change_is_retried() {
+        let mut ctrl = ClickThroughController::new();
+        let mask = AvatarHitMask::default();
+        assert!(ctrl.apply(None, false, &mask, |_| Err("failed")).is_err());
+        let mut calls = 0;
+        ctrl.apply(None, false, &mask, |desired| {
+            calls += 1;
+            assert!(desired);
+            Ok::<_, &str>(())
+        }).unwrap();
+        assert_eq!(calls, 1, "failed change must be retried");
     }
 
     #[test]

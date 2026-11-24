@@ -342,12 +342,10 @@ impl PetAppState {
             .map(|g| g.clone())
             .unwrap_or_default();
 
-        if let Some(new_ct) = self
-            .click_through
-            .update(cursor_norm, self.drag_active, &mask)
-        {
-            let _ = win.set_click_through(new_ct);
-        }
+        // A failed platform update leaves the applied state unchanged and is retried next frame.
+        let _ = self.click_through.apply(cursor_norm, self.drag_active, &mask, |desired| {
+            win.set_click_through(desired)
+        });
 
         let head_norm = mask
             .head_center()
