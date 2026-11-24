@@ -4,6 +4,8 @@
 //! pixels** matching Win32 `MONITORINFO::rcWork`, `DWMWA_EXTENDED_FRAME_BOUNDS`, and Rune
 //! `WindowHandle::set_position`. Logical DIP constants are scaled by `scale` (`dpi / 96.0`).
 
+use crate::hit_mask::ClickZone;
+
 pub const PET_WINDOW_WIDTH: f32 = 220.0;
 pub const PET_WINDOW_HEIGHT: f32 = 280.0;
 /// Logical DIP distance from the bottom of the 220x280 window up to the standing shoe soles
@@ -14,6 +16,11 @@ pub const FOOT_BOTTOM_MARGIN_DIP: f32 = 5.8;
 pub const SEAT_BOTTOM_MARGIN_DIP: f32 = 107.0;
 pub const WALK_SPEED_DIP: f32 = 68.0;
 pub const CLIMB_SPEED_DIP: f32 = 280.0;
+pub const GRAVITY_DIP: f32 = 1500.0;
+pub const MAX_FALL_SPEED_DIP: f32 = 960.0;
+pub const DRAG_THRESHOLD_DIP: f32 = 5.0;
+pub const IDLE_STRETCH_SEC: f32 = 45.0;
+pub const LONG_IDLE_SLEEP_SEC: f32 = 120.0;
 /// Horizontal distance (in logical DIP) travelled per full 2-step walk cycle (matches VRM leg
 /// geometry at `HIP_SWING_RAD = 0.30` so planted feet do not slide).
 pub const STRIDE_CYCLE_DIP: f32 = 120.0;
@@ -57,6 +64,12 @@ pub enum PetMode {
     Wave,
     Climb,
     Cheer,
+    React,
+    Carried,
+    Fall,
+    Land,
+    Stretch,
+    Sleep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +100,9 @@ pub struct PetSnapshot {
     pub walking: bool,
     pub dragging: bool,
     pub paused: bool,
+    pub eyes_closed: bool,
+    pub sleeping_local: bool,
+    pub carry_sway: f32,
     pub should_render: bool,
 }
 
@@ -161,6 +177,49 @@ pub fn is_valid_sit_target(candidate: Option<WindowCandidate>, work_area: Rect, 
         return false;
     }
     true
+}
+
+/// Pure selection of a real visible window directly matching a drag-drop position.
+pub fn select_drop_window(
+    candidates: &[WindowCandidate],
+    x: f32,
+    y: f32,
+    work_area: Rect,
+    scale: f64,
+) -> Option<WindowCandidate> {
+    let (avatar_w, _) = scaled_avatar_size(scale);
+    let snap_pad_x = scaled_px(20.0, scale) as f32;
+    let snap_tol_y = scaled_px(44.0, scale) as f32;
+    candidates.iter().copied().find(|&win| {
+        is_valid_sit_target(Some(win), work_area, scale)
+            && x >= win.rect.x as f32 - snap_pad_x
+            && x <= win.rect.right() as f32 - avatar_w as f32 + snap_pad_x
+            && (y - sit_window_y(win.rect, scale) as f32).abs() <= snap_tol_y
+    })
+}
+
+/// Pure selection of a real visible window whose top edge catches a falling avatar during a step.
+pub fn select_fall_catch_window(
+    candidates: &[WindowCandidate],
+    x: f32,
+    prev_y: f32,
+    next_y: f32,
+    work_area: Rect,
+    scale: f64,
+    skip_id: Option<u64>,
+) -> Option<WindowCandidate> {
+    let (avatar_w, _) = scaled_avatar_size(scale);
+    let pad_x = scaled_px(12.0, scale) as f32;
+    candidates.iter().copied().find(|&win| {
+        if skip_id == Some(win.id) || !is_valid_sit_target(Some(win), work_area, scale) {
+            return false;
+        }
+        let target_y = sit_window_y(win.rect, scale) as f32;
+        x >= win.rect.x as f32 - pad_x
+            && x <= win.rect.right() as f32 - avatar_w as f32 + pad_x
+            && prev_y <= target_y + 2.0
+            && next_y >= target_y - 2.0
+    })
 }
 
 pub fn facing_to_yaw_rad(facing: i8) -> f32 {
@@ -242,9 +301,21 @@ pub struct PetStateMachine {
     paused: bool,
     dragging: bool,
     drag_offset: (f32, f32),
+    last_drag_x: Option<f32>,
+    carry_sway: f32,
+    fall_vx: f32,
+    fall_vy: f32,
+    skip_catch_window_id: Option<u64>,
+    climb_start: Option<(f32, f32)>,
     climb_target: Option<(f32, f32)>,
+    climb_duration: f32,
     sit_window: Option<WindowCandidate>,
     candidate_window: Option<WindowCandidate>,
+    window_candidates: Vec<WindowCandidate>,
+    idle_since_interaction_sec: f32,
+    did_idle_stretch: bool,
+    click_count: u32,
+    turn_slowdown_sec: f32,
 }
 
 impl PetStateMachine {
@@ -277,9 +348,21 @@ impl PetStateMachine {
             paused: false,
             dragging: false,
             drag_offset: (0.0, 0.0),
+            last_drag_x: None,
+            carry_sway: 0.0,
+            fall_vx: 0.0,
+            fall_vy: 0.0,
+            skip_catch_window_id: None,
+            climb_start: None,
             climb_target: None,
+            climb_duration: 0.0,
             sit_window: None,
             candidate_window: None,
+            window_candidates: Vec::new(),
+            idle_since_interaction_sec: 0.0,
+            did_idle_stretch: false,
+            click_count: 0,
+            turn_slowdown_sec: 0.0,
         }
     }
 
@@ -385,6 +468,9 @@ impl PetStateMachine {
         if next != PetMode::Walk {
             self.walk_speed_factor = 0.0;
         }
+        if next != PetMode::Carried {
+            self.carry_sway = 0.0;
+        }
 
         match next {
             PetMode::Idle => {
@@ -415,26 +501,82 @@ impl PetStateMachine {
                 }
             }
             PetMode::Climb => {
-                self.pose = "idle";
+                self.pose = "jump";
                 self.expression = "happy";
+            }
+            PetMode::React => {
+                self.pose = if self.surface == Surface::Window {
+                    "sit"
+                } else {
+                    "react"
+                };
+                self.expression = "happy";
+                self.facing = 0;
+            }
+            PetMode::Carried => {
+                self.pose = "carry";
+                self.expression = "surprised";
+                self.facing = 0;
+            }
+            PetMode::Fall => {
+                self.pose = "fall";
+                self.expression = "surprised";
+                self.facing = 0;
+            }
+            PetMode::Land => {
+                self.pose = "land";
+                self.expression = "relaxed";
+                self.facing = 0;
+            }
+            PetMode::Stretch => {
+                self.pose = "stretch";
+                self.expression = "relaxed";
+                self.facing = 0;
+            }
+            PetMode::Sleep => {
+                self.pose = if self.surface == Surface::Window {
+                    "sleep_sit"
+                } else {
+                    "sleep"
+                };
+                self.expression = "relaxed";
+                self.facing = 0;
             }
         }
     }
 
-    fn begin_return_to_taskbar(&mut self) {
+    fn begin_fall_to_taskbar(&mut self, gentle_hop: bool) {
+        let prev_win_id = self.sit_window.map(|w| w.id);
         self.sit_window = None;
         self.surface = Surface::Taskbar;
+        self.climb_start = None;
+        self.climb_target = None;
+        self.climb_duration = 0.0;
         let tx = self.x.clamp(self.min_x(), self.max_x());
         let ty = self.taskbar_y();
+        self.x = tx;
         self.facing = 0;
-        if (self.y - ty).abs() < 2.0 && (self.x - tx).abs() < 2.0 {
-            self.x = tx;
+        let low_drop = scaled_px(8.0, self.scale) as f32;
+        let drop_dist = (ty - self.y).max(0.0);
+        if drop_dist <= low_drop && !gentle_hop {
             self.y = ty;
-            self.climb_target = None;
-            self.enter_mode(PetMode::Idle, 2.5);
+            self.fall_vx = 0.0;
+            self.fall_vy = 0.0;
+            self.skip_catch_window_id = None;
+            if drop_dist > 2.0 {
+                self.enter_mode(PetMode::Land, 0.28);
+            } else {
+                self.enter_mode(PetMode::Idle, 2.5);
+            }
         } else {
-            self.climb_target = Some((tx, ty));
-            self.enter_mode(PetMode::Climb, 4.0);
+            if gentle_hop {
+                self.fall_vy = -(130.0 * self.scale as f32);
+                self.skip_catch_window_id = prev_win_id;
+            } else {
+                self.fall_vy = 0.0;
+                self.skip_catch_window_id = None;
+            }
+            self.enter_mode(PetMode::Fall, 8.0);
         }
     }
 
@@ -442,21 +584,29 @@ impl PetStateMachine {
         let (win_min_x, win_max_x) = self.window_x_bounds(win.rect);
         let target_x = win_min_x + (win_max_x - win_min_x) * self.rng.next_f32();
         let target_y = sit_window_y(win.rect, self.scale) as f32;
+        let dist = (target_x - self.x).hypot(target_y - self.y);
+        let dur = (dist / self.climb_speed().max(1.0)).clamp(0.32, 1.45);
         self.surface = Surface::Window;
         self.sit_window = Some(win);
+        self.climb_start = Some((self.x, self.y));
         self.climb_target = Some((target_x, target_y));
+        self.climb_duration = dur;
         self.facing = if target_x >= self.x { 1 } else { -1 };
-        self.enter_mode(PetMode::Climb, 5.0);
+        self.enter_mode(PetMode::Climb, dur + 0.5);
     }
 
     fn pick_next_mode(&mut self) {
         if self.behavior != ForcedBehavior::Auto {
             return;
         }
+        if self.idle_since_interaction_sec >= LONG_IDLE_SLEEP_SEC {
+            self.enter_mode(PetMode::Sleep, 99_999.0);
+            return;
+        }
         if self.surface == Surface::Window {
             // While perched on a verified real window, stay seated or hop back down to the taskbar.
             if !is_valid_sit_target(self.sit_window, self.work_area, self.scale) {
-                self.begin_return_to_taskbar();
+                self.begin_fall_to_taskbar(false);
                 return;
             }
             let r = self.rng.next_f32();
@@ -464,8 +614,15 @@ impl PetStateMachine {
                 let dur = 4.0 + self.rng.next_f32() * 3.0;
                 self.enter_mode(PetMode::Sit, dur);
             } else {
-                self.begin_return_to_taskbar();
+                self.begin_fall_to_taskbar(true);
             }
+            return;
+        }
+
+        // Prolonged idle stretch before eventually falling asleep
+        if self.idle_since_interaction_sec >= IDLE_STRETCH_SEC && !self.did_idle_stretch {
+            self.did_idle_stretch = true;
+            self.enter_mode(PetMode::Stretch, 3.4);
             return;
         }
 
@@ -505,18 +662,68 @@ impl PetStateMachine {
     }
 
     pub fn set_environment(&mut self, next_work_area: Rect, next_scale: f64) {
+        let prev_scale = self.scale;
+        let next_scale = sanitized_scale(next_scale);
         self.work_area = next_work_area;
-        self.scale = sanitized_scale(next_scale);
+        self.scale = next_scale;
+
+        if self.dragging {
+            let ratio = (next_scale / prev_scale.max(0.25)) as f32;
+            self.drag_offset.0 *= ratio;
+            self.drag_offset.1 *= ratio;
+            return;
+        }
+
+        if self.surface == Surface::Window {
+            if let Some(win) = self.sit_window
+                && is_valid_sit_target(Some(win), self.work_area, self.scale)
+            {
+                let (win_min_x, win_max_x) = self.window_x_bounds(win.rect);
+                let target_y = sit_window_y(win.rect, self.scale) as f32;
+                if self.mode == PetMode::Climb {
+                    let tx = self
+                        .climb_target
+                        .map(|(x, _)| x)
+                        .unwrap_or(self.x)
+                        .clamp(win_min_x, win_max_x);
+                    self.climb_target = Some((tx, target_y));
+                } else {
+                    self.x = self.x.clamp(win_min_x, win_max_x);
+                    self.y = target_y;
+                }
+            } else {
+                self.x = self.x.clamp(self.min_x(), self.max_x());
+                self.begin_fall_to_taskbar(false);
+            }
+            return;
+        }
+
         self.x = self.x.clamp(self.min_x(), self.max_x());
-        if self.surface == Surface::Taskbar && !self.dragging && self.mode != PetMode::Climb {
-            self.y = self.taskbar_y();
-        } else if self.surface == Surface::Taskbar && self.mode == PetMode::Climb {
+        if self.mode == PetMode::Fall {
+            if self.y >= self.taskbar_y() {
+                self.y = self.taskbar_y();
+                self.fall_vx = 0.0;
+                self.fall_vy = 0.0;
+                self.enter_mode(PetMode::Land, 0.28);
+            }
+        } else if self.mode == PetMode::Climb {
             if let Some((tx, _)) = self.climb_target {
                 self.climb_target = Some((tx.clamp(self.min_x(), self.max_x()), self.taskbar_y()));
             }
         } else {
-            self.y = self.y.clamp(self.work_area.y as f32, self.taskbar_y());
+            self.y = self.taskbar_y();
         }
+    }
+
+    pub fn sync_window_candidates(&mut self, candidates: &[WindowCandidate]) {
+        self.window_candidates.clear();
+        self.window_candidates.extend(
+            candidates
+                .iter()
+                .copied()
+                .filter(|c| is_valid_sit_target(Some(*c), self.work_area, self.scale)),
+        );
+        self.candidate_window = self.window_candidates.first().copied();
     }
 
     /// Reconciles live per-frame OS window state for both the currently tracked sit/climb target
@@ -541,7 +748,7 @@ impl PetStateMachine {
         });
 
         let Some(live) = valid_tracked else {
-            self.begin_return_to_taskbar();
+            self.begin_fall_to_taskbar(false);
             return;
         };
 
@@ -565,6 +772,11 @@ impl PetStateMachine {
         self.sit_window = Some(live);
     }
 
+    pub fn notify_user_activity(&mut self) {
+        self.idle_since_interaction_sec = 0.0;
+        self.did_idle_stretch = false;
+    }
+
     pub fn set_paused(&mut self, paused: bool) {
         self.paused = paused;
     }
@@ -573,11 +785,85 @@ impl PetStateMachine {
         self.paused
     }
 
+    pub fn on_click(&mut self, zone: ClickZone) {
+        if self.paused || self.dragging || self.behavior != ForcedBehavior::Auto {
+            return;
+        }
+        self.notify_user_activity();
+        self.click_count = self.click_count.wrapping_add(1);
+
+        if self.surface == Surface::Window {
+            // Stay seated on the real window and play a happy seated reaction.
+            self.enter_mode(PetMode::React, 1.4);
+            self.pose = "sit";
+            self.expression = "happy";
+            return;
+        }
+
+        if self.mode == PetMode::Fall || self.mode == PetMode::Climb {
+            return;
+        }
+
+        match zone {
+            ClickZone::Head => {
+                self.enter_mode(PetMode::React, 1.5);
+                self.pose = "react";
+                self.expression = "happy";
+            }
+            ClickZone::Feet => {
+                self.enter_mode(PetMode::React, 1.2);
+                self.pose = "react";
+                self.expression = "surprised";
+            }
+            ClickZone::Body => match self.click_count % 4 {
+                0 => {
+                    self.enter_mode(PetMode::Wave, 1.9);
+                }
+                1 => {
+                    self.enter_mode(PetMode::React, 1.5);
+                    self.pose = "react";
+                    self.expression = "happy";
+                }
+                2 => {
+                    self.enter_mode(PetMode::Cheer, 1.8);
+                }
+                _ => {
+                    self.enter_mode(PetMode::React, 1.6);
+                    self.pose = "bow";
+                    self.expression = "happy";
+                }
+            },
+        }
+    }
+
+    pub fn on_petting(&mut self) {
+        if self.paused || self.dragging || self.behavior != ForcedBehavior::Auto {
+            return;
+        }
+        self.notify_user_activity();
+        if self.mode == PetMode::Sleep {
+            if self.surface == Surface::Window {
+                self.enter_mode(PetMode::Sit, 4.5);
+                self.expression = "happy";
+            } else {
+                self.enter_mode(PetMode::Idle, 3.0);
+                self.expression = "happy";
+            }
+        } else if self.mode == PetMode::Walk {
+            self.enter_mode(PetMode::Idle, 2.5);
+            self.expression = "happy";
+        }
+    }
+
     pub fn on_double_click(&mut self) {
         if self.paused || self.dragging || self.behavior != ForcedBehavior::Auto {
             return;
         }
+        self.notify_user_activity();
         if self.surface == Surface::Window {
+            self.enter_mode(PetMode::React, 1.6);
+            self.pose = "sit";
+            self.expression = "happy";
             return;
         }
         if self.mode == PetMode::Cheer {
@@ -588,43 +874,64 @@ impl PetStateMachine {
     }
 
     pub fn start_drag(&mut self, screen_x: f32, screen_y: f32) {
+        self.notify_user_activity();
         self.dragging = true;
         self.drag_offset = (screen_x - self.x, screen_y - self.y);
+        self.last_drag_x = Some(screen_x);
+        self.carry_sway = 0.0;
+        self.fall_vx = 0.0;
+        self.fall_vy = 0.0;
+        self.skip_catch_window_id = None;
         self.surface = Surface::Taskbar;
         self.sit_window = None;
+        self.climb_start = None;
         self.climb_target = None;
-        self.enter_mode(PetMode::Cheer, 9999.0);
+        self.enter_mode(PetMode::Carried, 9999.0);
     }
 
     pub fn move_drag(&mut self, screen_x: f32, screen_y: f32) {
         if !self.dragging {
             return;
         }
+        if let Some(prev_x) = self.last_drag_x {
+            let dx = screen_x - prev_x;
+            let norm = (dx / (14.0 * self.scale.max(0.5) as f32)).clamp(-1.0, 1.0);
+            self.carry_sway = self.carry_sway * 0.65 + norm * 0.35;
+            let max_throw = 240.0 * self.scale as f32;
+            self.fall_vx = (dx * 16.0).clamp(-max_throw, max_throw);
+        }
+        self.last_drag_x = Some(screen_x);
         self.x = (screen_x - self.drag_offset.0).clamp(self.min_x(), self.max_x());
         self.y = (screen_y - self.drag_offset.1).clamp(self.work_area.y as f32, self.taskbar_y());
     }
 
+    #[cfg(test)]
     pub fn end_drag(&mut self, drop_candidate: Option<WindowCandidate>) {
+        if let Some(c) = drop_candidate {
+            self.end_drag_with_candidates(&[c]);
+        } else {
+            self.end_drag_with_candidates(&[]);
+        }
+    }
+
+    pub fn end_drag_with_candidates(&mut self, candidates: &[WindowCandidate]) {
         if !self.dragging {
             return;
         }
         self.dragging = false;
-        let snap_pad_x = scaled_px(20.0, self.scale) as f32;
-        let snap_tol_y = scaled_px(44.0, self.scale) as f32;
-        if let Some(win) = drop_candidate
-            && is_valid_sit_target(Some(win), self.work_area, self.scale)
-            && self.x >= win.rect.x as f32 - snap_pad_x
-            && self.x <= win.rect.right() as f32 - self.avatar_w() + snap_pad_x
-            && (self.y - sit_window_y(win.rect, self.scale) as f32).abs() <= snap_tol_y
-        {
+        self.last_drag_x = None;
+        self.carry_sway = 0.0;
+        if let Some(win) = select_drop_window(candidates, self.x, self.y, self.work_area, self.scale) {
             let (win_min_x, win_max_x) = self.window_x_bounds(win.rect);
             self.surface = Surface::Window;
             self.sit_window = Some(win);
             self.x = self.x.clamp(win_min_x, win_max_x);
             self.y = sit_window_y(win.rect, self.scale) as f32;
+            self.fall_vx = 0.0;
+            self.fall_vy = 0.0;
             self.enter_mode(PetMode::Sit, 4.5);
         } else {
-            self.begin_return_to_taskbar();
+            self.begin_fall_to_taskbar(false);
         }
     }
 
@@ -635,7 +942,17 @@ impl PetStateMachine {
         }
         let dt = dt_sec.max(0.0);
         if self.dragging {
+            // Gently relax carry sway back toward 0 when held still
+            self.carry_sway *= (1.0 - 6.0 * dt).max(0.0);
+            self.fall_vx *= (1.0 - 8.0 * dt).max(0.0);
             return self.snapshot();
+        }
+
+        if self.behavior == ForcedBehavior::Auto {
+            self.idle_since_interaction_sec += dt;
+        }
+        if self.turn_slowdown_sec > 0.0 {
+            self.turn_slowdown_sec = (self.turn_slowdown_sec - dt).max(0.0);
         }
 
         self.state_elapsed += dt;
@@ -656,42 +973,109 @@ impl PetStateMachine {
             } else {
                 1.0
             };
-            let speed_factor = (env_ease * edge_ease).clamp(0.0, 1.0);
+            let turn_ease = if self.turn_slowdown_sec > 0.0 {
+                0.20 + 0.80 * (1.0 - (self.turn_slowdown_sec / 0.22).clamp(0.0, 1.0))
+            } else {
+                1.0
+            };
+            let speed_factor = (env_ease * edge_ease * turn_ease).clamp(0.0, 1.0);
             self.walk_speed_factor = speed_factor;
             self.x += (self.facing as f32) * self.walk_speed() * speed_factor * dt;
             if self.x <= left_bound {
                 self.x = left_bound;
                 self.facing = 1;
+                self.turn_slowdown_sec = 0.22;
             } else if self.x >= right_bound {
                 self.x = right_bound;
                 self.facing = -1;
+                self.turn_slowdown_sec = 0.22;
             }
+            self.last_dx_px = self.x - prev_x;
+        } else if self.mode == PetMode::Fall {
+            let gravity = GRAVITY_DIP * self.scale as f32;
+            let max_fall = MAX_FALL_SPEED_DIP * self.scale as f32;
+            let prev_y = self.y;
+            self.fall_vy = (self.fall_vy + gravity * dt).min(max_fall);
+            self.fall_vx *= (1.0 - 3.5 * dt).max(0.0);
+            self.x = (self.x + self.fall_vx * dt).clamp(self.min_x(), self.max_x());
+            let next_y = self.y + self.fall_vy * dt;
+
+            // Only catch real visible windows while descending
+            if self.fall_vy > 0.0
+                && let Some(win) = select_fall_catch_window(
+                    &self.window_candidates,
+                    self.x,
+                    prev_y,
+                    next_y,
+                    self.work_area,
+                    self.scale,
+                    self.skip_catch_window_id,
+                )
+            {
+                let (win_min_x, win_max_x) = self.window_x_bounds(win.rect);
+                self.surface = Surface::Window;
+                self.sit_window = Some(win);
+                self.x = self.x.clamp(win_min_x, win_max_x);
+                self.y = sit_window_y(win.rect, self.scale) as f32;
+                self.fall_vx = 0.0;
+                self.fall_vy = 0.0;
+                self.skip_catch_window_id = None;
+                self.enter_mode(PetMode::Sit, 4.5);
+                return self.snapshot();
+            }
+
+            let floor_y = self.taskbar_y();
+            if next_y >= floor_y {
+                self.y = floor_y;
+                self.fall_vx = 0.0;
+                self.fall_vy = 0.0;
+                self.skip_catch_window_id = None;
+                self.enter_mode(PetMode::Land, 0.30);
+                return self.snapshot();
+            }
+            self.y = next_y;
             self.last_dx_px = self.x - prev_x;
         } else if self.mode == PetMode::Climb
             && let Some((tx, ty)) = self.climb_target
         {
-            let dx = tx - self.x;
-            let dy = ty - self.y;
-            let dist = dx.hypot(dy);
-            let step_dist = self.climb_speed() * dt;
-            if dist <= step_dist || dist < 1.0 {
+            let (sx, sy) = self.climb_start.unwrap_or((self.x, self.y));
+            let dur = self.climb_duration.max(0.25);
+            let t = (self.state_elapsed / dur).clamp(0.0, 1.0);
+            if t >= 1.0 {
                 self.x = tx;
                 self.y = ty;
+                self.climb_start = None;
                 self.climb_target = None;
                 if self.surface == Surface::Window {
                     if is_valid_sit_target(self.sit_window, self.work_area, self.scale) {
                         self.enter_mode(PetMode::Sit, 4.5);
                     } else {
-                        self.begin_return_to_taskbar();
+                        self.begin_fall_to_taskbar(false);
                     }
                 } else {
                     self.enter_mode(PetMode::Idle, 2.8);
                 }
                 return self.snapshot();
             }
-            self.x += (dx / dist) * step_dist;
-            self.y += (dy / dist) * step_dist;
+            let smooth_t = t * t * (3.0 - 2.0 * t);
+            let arc_h = scaled_px(42.0, self.scale) as f32;
+            let arc_lift = 4.0 * t * (1.0 - t) * arc_h;
+            self.x = sx + (tx - sx) * smooth_t;
+            self.y = (sy + (ty - sy) * smooth_t - arc_lift).max(self.work_area.y as f32);
             self.last_dx_px = self.x - prev_x;
+        } else if self.mode == PetMode::Land && self.state_elapsed >= self.state_duration {
+            self.enter_mode(PetMode::Idle, 2.6);
+            return self.snapshot();
+        } else if self.mode == PetMode::React && self.state_elapsed >= self.state_duration {
+            if self.surface == Surface::Window {
+                self.enter_mode(PetMode::Sit, 4.0);
+            } else {
+                self.enter_mode(PetMode::Idle, 2.4);
+            }
+            return self.snapshot();
+        } else if self.mode == PetMode::Sleep {
+            // Stay peacefully sleeping until woken by user interaction or harness mood.
+            return self.snapshot();
         }
 
         if self.behavior == ForcedBehavior::Auto && self.state_elapsed >= self.state_duration {
@@ -703,6 +1087,7 @@ impl PetStateMachine {
 
     pub fn snapshot(&self) -> PetSnapshot {
         let should_render = !self.paused;
+        let sleeping_local = self.mode == PetMode::Sleep;
         PetSnapshot {
             mode: self.mode,
             surface: self.surface,
@@ -716,6 +1101,9 @@ impl PetStateMachine {
             walking: !self.paused && self.mode == PetMode::Walk,
             dragging: self.dragging,
             paused: self.paused,
+            eyes_closed: sleeping_local,
+            sleeping_local,
+            carry_sway: self.carry_sway,
             should_render,
         }
     }
@@ -940,10 +1328,162 @@ mod tests {
         };
         sm.end_drag(Some(minimized));
         assert_eq!(sm.snapshot().surface, Surface::Taskbar);
-        assert_eq!(sm.snapshot().mode, PetMode::Climb);
+        assert_eq!(sm.snapshot().mode, PetMode::Fall);
         for _ in 0..80 {
-            sm.step(0.1);
+            sm.step(0.05);
         }
         assert_eq!(sm.snapshot().y, floor_window_y(WORK_100, 1.0));
+    }
+
+    #[test]
+    fn single_click_reacts_on_taskbar_and_preserves_seated_window() {
+        // On taskbar: clicking head triggers playful reaction and stops walk
+        let mut sm = PetStateMachine::new(WORK_100, 1.0, 5);
+        sm.on_click(crate::hit_mask::ClickZone::Head);
+        let snap = sm.snapshot();
+        assert_eq!(snap.mode, PetMode::React);
+        assert_eq!(snap.pose, "react");
+        assert_eq!(snap.expression, "happy");
+
+        // On window: clicking stays seated on the window (never knocks pet off)
+        let win = make_window(55, Rect { x: 300, y: 420, width: 800, height: 500 });
+        let mut sm2 = PetStateMachine::new(WORK_100, 1.0, 5);
+        let init2 = sm2.snapshot();
+        sm2.start_drag(init2.x as f32 + 50.0, init2.y as f32 + 50.0);
+        sm2.move_drag(500.0 + 50.0, sit_window_y(win.rect, 1.0) as f32 + 50.0);
+        sm2.end_drag(Some(win));
+        assert_eq!(sm2.snapshot().surface, Surface::Window);
+        sm2.on_click(crate::hit_mask::ClickZone::Body);
+        assert_eq!(sm2.snapshot().surface, Surface::Window, "click must not knock pet off window");
+        assert_eq!(sm2.tracked_window_id(), Some(55));
+        assert_eq!(sm2.snapshot().expression, "happy");
+    }
+
+    #[test]
+    fn drag_carries_with_sway_falls_with_gravity_and_lands_with_crouch_or_catches_window() {
+        let mut sm = PetStateMachine::new(WORK_100, 1.0, 11);
+        let init = sm.snapshot();
+        sm.start_drag(init.x as f32 + 80.0, init.y as f32 + 80.0);
+        assert_eq!(sm.snapshot().mode, PetMode::Carried);
+        assert_eq!(sm.snapshot().pose, "carry");
+
+        sm.move_drag(600.0, 160.0);
+        sm.move_drag(660.0, 160.0);
+        assert!(sm.snapshot().carry_sway.abs() > 0.1, "horizontal drag should produce carry sway");
+
+        // Drop high in the air with no windows -> Fall with gravity -> Land crouch -> Idle
+        sm.end_drag_with_candidates(&[]);
+        assert_eq!(sm.snapshot().mode, PetMode::Fall);
+        assert_eq!(sm.snapshot().pose, "fall");
+        let y0 = sm.snapshot().y;
+        sm.step(0.05);
+        let y1 = sm.snapshot().y;
+        sm.step(0.05);
+        let y2 = sm.snapshot().y;
+        assert!(y1 > y0 && (y2 - y1) > (y1 - y0), "fall must accelerate under gravity");
+
+        let mut saw_land = false;
+        for _ in 0..80 {
+            let s = sm.step(0.03);
+            if s.mode == PetMode::Land {
+                saw_land = true;
+                assert_eq!(s.pose, "land");
+                assert_eq!(s.y, floor_window_y(WORK_100, 1.0));
+                break;
+            }
+        }
+        assert!(saw_land, "falling to taskbar must transition through Land crouch");
+        for _ in 0..30 {
+            sm.step(0.03);
+        }
+        assert_eq!(sm.snapshot().mode, PetMode::Idle);
+
+        // Drop above a valid visible window -> catches the window while falling and sits on it
+        let lower_win = make_window(88, Rect { x: 400, y: 560, width: 700, height: 400 });
+        let mut sm_catch = PetStateMachine::new(WORK_100, 1.0, 11);
+        let i2 = sm_catch.snapshot();
+        sm_catch.start_drag(i2.x as f32 + 60.0, i2.y as f32 + 60.0);
+        sm_catch.move_drag(650.0, 220.0);
+        sm_catch.sync_window_candidates(&[lower_win]);
+        sm_catch.end_drag_with_candidates(&[lower_win]);
+        assert_eq!(sm_catch.snapshot().mode, PetMode::Fall);
+        let mut caught = false;
+        for _ in 0..80 {
+            let s = sm_catch.step(0.02);
+            if s.surface == Surface::Window && s.mode == PetMode::Sit {
+                caught = true;
+                assert_eq!(s.y, sit_window_y(lower_win.rect, 1.0));
+                break;
+            }
+        }
+        assert!(caught, "falling above a real visible window should land and sit on it");
+    }
+
+    #[test]
+    fn dpi_and_monitor_change_updates_taskbar_floor_and_seated_window_height() {
+        let mut sm = PetStateMachine::new(WORK_100, 1.0, 19);
+        let win = make_window(42, Rect { x: 300, y: 500, width: 900, height: 500 });
+        let init = sm.snapshot();
+        sm.start_drag(init.x as f32 + 40.0, init.y as f32 + 40.0);
+        sm.move_drag(500.0 + 40.0, sit_window_y(win.rect, 1.0) as f32 + 40.0);
+        sm.end_drag(Some(win));
+        assert_eq!(sm.snapshot().y, sit_window_y(win.rect, 1.0));
+
+        // DPI increases to 1.5x on same monitor -> seated window Y recalculates immediately
+        let work_150 = Rect { x: 0, y: 0, width: 2880, height: 1560 };
+        sm.set_environment(work_150, 1.5);
+        assert_eq!(sm.snapshot().surface, Surface::Window);
+        assert_eq!(sm.snapshot().y, sit_window_y(win.rect, 1.5));
+
+        // Monitor switches completely away from seated window -> pet falls to new monitor taskbar
+        let mon2 = Rect { x: 2880, y: 0, width: 1920, height: 1032 };
+        sm.set_environment(mon2, 1.0);
+        assert_eq!(sm.snapshot().surface, Surface::Taskbar);
+        for _ in 0..100 {
+            sm.step(0.03);
+        }
+        assert_eq!(sm.snapshot().y, floor_window_y(mon2, 1.0));
+        assert!(sm.snapshot().x >= mon2.x && sm.snapshot().x <= mon2.right());
+    }
+
+    #[test]
+    fn long_idle_stretches_then_sleeps_and_wakes_on_interaction() {
+        let mut sm = PetStateMachine::new(WORK_100, 1.0, 23);
+        let mut saw_stretch = false;
+        let mut saw_sleep = false;
+        for _ in 0..1500 {
+            let s = sm.step(0.1);
+            if s.mode == PetMode::Stretch {
+                saw_stretch = true;
+                assert_eq!(s.pose, "stretch");
+            }
+            if s.mode == PetMode::Sleep {
+                saw_sleep = true;
+                assert_eq!(s.pose, "sleep");
+                assert!(s.eyes_closed);
+                assert!(s.sleeping_local);
+                break;
+            }
+        }
+        assert!(saw_stretch, "pet should stretch during prolonged idle");
+        assert!(saw_sleep, "pet should fall asleep after long idle");
+
+        // Clicking wakes pet cleanly
+        sm.on_click(crate::hit_mask::ClickZone::Head);
+        let awake = sm.snapshot();
+        assert_ne!(awake.mode, PetMode::Sleep);
+        assert!(!awake.eyes_closed);
+        assert!(!awake.sleeping_local);
+
+        // Petting also wakes a sleeping pet
+        for _ in 0..1500 {
+            if sm.step(0.1).mode == PetMode::Sleep {
+                break;
+            }
+        }
+        assert_eq!(sm.snapshot().mode, PetMode::Sleep);
+        sm.on_petting();
+        assert_ne!(sm.snapshot().mode, PetMode::Sleep);
+        assert!(!sm.snapshot().eyes_closed);
     }
 }

@@ -195,6 +195,29 @@ mod imp {
         primary_work_area()
     }
 
+    /// Returns `(work_area_physical_px, dpi_scale)` for the monitor containing `(screen_x, screen_y)`.
+    pub fn monitor_work_area_and_scale_at(screen_x: i32, screen_y: i32) -> (Rect, f64) {
+        // SAFETY: querying nearest monitor work area and effective DPI for a desktop point.
+        unsafe {
+            let mon = MonitorFromPoint(
+                POINT {
+                    x: screen_x,
+                    y: screen_y,
+                },
+                MONITOR_DEFAULTTONEAREST,
+            );
+            if !mon.is_null() {
+                let mut info: MONITORINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(mon, &mut info) != 0 {
+                    let scale = monitor_scale_factor(mon);
+                    return (rect_from_win32(info.rcWork), scale);
+                }
+            }
+        }
+        primary_work_area()
+    }
+
     /// Returns `(primary_work_area_physical_px, primary_dpi_scale)`.
     pub fn primary_work_area() -> (Rect, f64) {
         // SAFETY: querying primary monitor work area and effective DPI.
@@ -428,7 +451,8 @@ mod imp {
         ignore_pid: u32,
         work_area: Rect,
         scale: f64,
-        found: Option<WindowCandidate>,
+        found: Vec<WindowCandidate>,
+        max_count: usize,
     }
 
     unsafe extern "system" fn enum_top_level_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
@@ -436,37 +460,55 @@ mod imp {
         let ctx = unsafe { &mut *(lparam as *mut EnumCtx) };
         if let Some(cand) = unsafe { inspect_hwnd(hwnd, ctx.ignore_pid, None) }
             && is_valid_sit_target(Some(cand), ctx.work_area, ctx.scale)
+            && !ctx.found.iter().any(|existing| existing.id == cand.id)
         {
-            ctx.found = Some(cand);
-            return 0; // stop enumerating at highest valid Z-order window
+            ctx.found.push(cand);
+            if ctx.found.len() >= ctx.max_count {
+                return 0;
+            }
         }
         1
     }
 
-    /// Finds the highest Z-order real visible window on `work_area` with an unoccluded top edge
-    /// suitable for sitting (prefers the foreground window if valid).
-    pub fn find_sit_candidate(
+    /// Finds top Z-order real visible windows on `work_area` with unoccluded top edges suitable
+    /// for sitting (foreground window first if valid).
+    pub fn find_sit_candidates(
         ignore_pid: u32,
         work_area: Rect,
         scale: f64,
-    ) -> Option<WindowCandidate> {
+    ) -> Vec<WindowCandidate> {
+        let mut found = Vec::with_capacity(8);
         // SAFETY: read-only Win32 foreground and top-level window enumeration.
         unsafe {
             let fg = GetForegroundWindow();
             if let Some(cand) = inspect_hwnd(fg, ignore_pid, None)
                 && is_valid_sit_target(Some(cand), work_area, scale)
             {
-                return Some(cand);
+                found.push(cand);
             }
             let mut ctx = EnumCtx {
                 ignore_pid,
                 work_area,
                 scale,
-                found: None,
+                found,
+                max_count: 12,
             };
             let _ = EnumWindows(Some(enum_top_level_proc), (&mut ctx as *mut EnumCtx) as LPARAM);
             ctx.found
         }
+    }
+
+    /// Finds the highest Z-order real visible window on `work_area` with an unoccluded top edge
+    /// suitable for sitting (prefers the foreground window if valid).
+    #[allow(dead_code)]
+    pub fn find_sit_candidate(
+        ignore_pid: u32,
+        work_area: Rect,
+        scale: f64,
+    ) -> Option<WindowCandidate> {
+        find_sit_candidates(ignore_pid, work_area, scale)
+            .into_iter()
+            .next()
     }
 
     pub fn apply_tool_window_style(win: &rune::WindowHandle) {
@@ -513,6 +555,10 @@ mod imp {
         primary_work_area()
     }
 
+    pub fn monitor_work_area_and_scale_at(_screen_x: i32, _screen_y: i32) -> (Rect, f64) {
+        primary_work_area()
+    }
+
     pub fn primary_work_area() -> (Rect, f64) {
         (
             Rect {
@@ -541,6 +587,15 @@ mod imp {
         None
     }
 
+    pub fn find_sit_candidates(
+        _ignore_pid: u32,
+        _work_area: Rect,
+        _scale: f64,
+    ) -> Vec<WindowCandidate> {
+        Vec::new()
+    }
+
+    #[allow(dead_code)]
     pub fn find_sit_candidate(
         _ignore_pid: u32,
         _work_area: Rect,
@@ -554,6 +609,6 @@ mod imp {
 
 pub use imp::{
     TimerResolutionGuard, apply_tool_window_style, cursor_position_px, ensure_dpi_awareness,
-    find_sit_candidate, primary_work_area, process_working_set_mb, query_window_candidate,
-    window_rect_px, window_work_area_and_scale,
+    find_sit_candidates, monitor_work_area_and_scale_at, primary_work_area, process_working_set_mb,
+    query_window_candidate, window_rect_px, window_work_area_and_scale,
 };

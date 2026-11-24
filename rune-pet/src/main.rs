@@ -17,7 +17,6 @@ mod renderer;
 mod vrm;
 mod win32;
 
-use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -30,20 +29,17 @@ use rune::{
 
 use crate::delight::DelightController;
 use crate::harness::{HarnessMood, HarnessWatcher, MoodPresentation, mood_preset};
-use crate::hit_mask::{AvatarHitMask, ClickThroughController};
+use crate::hit_mask::{AvatarHitMask, ClickThroughController, ClickZone};
 use crate::pacing::{FramePacer, PaceDecision, TARGET_FPS};
 use crate::pet_state::{
-    ForcedBehavior, PET_WINDOW_HEIGHT, PET_WINDOW_WIDTH, PetStateMachine, Rect, WindowCandidate,
-    compute_walk_phase_delta, facing_to_yaw_rad, floor_window_y, scaled_avatar_size, scaled_px,
+    DRAG_THRESHOLD_DIP, ForcedBehavior, PET_WINDOW_HEIGHT, PET_WINDOW_WIDTH, PetMode,
+    PetStateMachine, Rect, WindowCandidate, floor_window_y, scaled_avatar_size, scaled_px,
 };
-use crate::poses::{
-    Pose, PoseMap, compute_auto_blink, compute_idle_breathing, compute_pose_secondary_motion,
-    compute_walk_offsets, ease_in_out_cubic, interpolate_pose, load_poses, scale_pose,
-};
+pub use crate::poses::EvaluatedPose;
+use crate::poses::{BlenderInput, PoseBlender, PoseMap, load_poses};
 use crate::renderer::{RenderMetrics, VrmCompositor};
 use crate::vrm::VrmModel;
 
-const EXPRESSION_NAMES: [&str; 5] = ["happy", "angry", "sad", "relaxed", "surprised"];
 const MEASURE_WARMUP_SEC: f64 = 1.0;
 
 #[derive(Clone, Debug)]
@@ -63,15 +59,8 @@ static TRAY_QUEUE: OnceLock<Arc<Mutex<Vec<TrayEvent>>>> = OnceLock::new();
 static RENDER_METRICS: OnceLock<Arc<Mutex<RenderMetrics>>> = OnceLock::new();
 static HIT_MASK_SLOT: OnceLock<Arc<Mutex<AvatarHitMask>>> = OnceLock::new();
 
-pub struct EvaluatedPose {
-    pub pose: Pose,
-    pub root_yaw: f32,
-    pub root_bob_y: f32,
-    pub expressions: HashMap<&'static str, f32>,
-}
-
 pub struct PetAppState {
-    poses: PoseMap,
+    blender: PoseBlender,
     pet: PetStateMachine,
     pacer: FramePacer,
     harness: HarnessWatcher,
@@ -84,27 +73,11 @@ pub struct PetAppState {
     last_window_pos: Option<(i32, i32)>,
     last_harness_poll_t: f64,
     last_env_poll_t: f64,
-    cached_candidate: Option<WindowCandidate>,
+    cached_candidates: Vec<WindowCandidate>,
 
-    pose_name: &'static str,
-    pose_from: Pose,
-    pose_to: Pose,
-    pose_current: Pose,
-    pose_elapsed_ms: f32,
-    pose_duration_ms: f32,
-
-    expr_name: &'static str,
-    expr_from: HashMap<&'static str, f32>,
-    expr_to: HashMap<&'static str, f32>,
-    expr_weights: HashMap<&'static str, f32>,
-    expr_elapsed_ms: f32,
-    expr_duration_ms: f32,
-
-    walk_phase: f32,
-    walk_blend: f32,
-    facing_current: f32,
-    total_time_sec: f32,
     forced_preview: bool,
+    press_origin_px: Option<(f32, f32)>,
+    press_window_pt: Option<(f32, f32)>,
     drag_active: bool,
     tray: Option<Tray>,
 }
@@ -122,20 +95,13 @@ impl PetAppState {
         pet.set_forced_behavior(forced);
         pet.set_prefer_sit_first(sit_first);
         let snap = pet.snapshot();
-        let initial_pose = poses.get(snap.pose).cloned().unwrap_or_default();
-
-        let zero_expr: HashMap<&'static str, f32> =
-            EXPRESSION_NAMES.iter().map(|&n| (n, 0.0)).collect();
-        let mut init_expr = zero_expr.clone();
-        if let Some(slot) = init_expr.get_mut(snap.expression) {
-            *slot = 1.0;
-        }
+        let blender = PoseBlender::new(poses, snap.pose, snap.expression, snap.facing);
 
         let mut harness = HarnessWatcher::new(state_file);
         let _ = harness.poll();
 
         Self {
-            poses,
+            blender,
             pet,
             pacer: FramePacer::new(TARGET_FPS),
             harness,
@@ -147,24 +113,10 @@ impl PetAppState {
             last_window_pos: None,
             last_harness_poll_t: -10.0,
             last_env_poll_t: -10.0,
-            cached_candidate: None,
-            pose_name: snap.pose,
-            pose_from: initial_pose.clone(),
-            pose_to: initial_pose.clone(),
-            pose_current: initial_pose,
-            pose_elapsed_ms: 0.0,
-            pose_duration_ms: 0.0,
-            expr_name: snap.expression,
-            expr_from: init_expr.clone(),
-            expr_to: init_expr.clone(),
-            expr_weights: init_expr,
-            expr_elapsed_ms: 0.0,
-            expr_duration_ms: 0.0,
-            walk_phase: std::f32::consts::FRAC_PI_2,
-            walk_blend: 0.0,
-            facing_current: facing_to_yaw_rad(snap.facing),
-            total_time_sec: 0.0,
+            cached_candidates: Vec::new(),
             forced_preview: false,
+            press_origin_px: None,
+            press_window_pt: None,
             drag_active: false,
             tray: None,
         }
@@ -175,8 +127,13 @@ impl PetAppState {
     }
 
     pub fn bubble_text(&self) -> Option<(&str, [u8; 3])> {
-        self.active_mood()
-            .map(|m| (m.bubble_text.as_str(), m.accent_rgb))
+        if let Some(m) = self.active_mood() {
+            return Some((m.bubble_text.as_str(), m.accent_rgb));
+        }
+        if self.pet.snapshot().sleeping_local {
+            return Some(("Zzz...", [139, 92, 246]));
+        }
+        None
     }
 
     pub fn should_render(&self) -> bool {
@@ -184,33 +141,6 @@ impl PetAppState {
             return false;
         }
         self.pet.snapshot().should_render
-    }
-
-    fn set_pose_target(&mut self, name: &'static str, duration_ms: f32) {
-        if let Some(target) = self.poses.get(name).cloned() {
-            self.pose_name = name;
-            self.pose_from = self.pose_current.clone();
-            self.pose_to = target;
-            self.pose_elapsed_ms = 0.0;
-            self.pose_duration_ms = duration_ms.max(0.0);
-            if duration_ms <= 0.0 {
-                self.pose_current = self.pose_to.clone();
-            }
-        }
-    }
-
-    fn set_expr_target(&mut self, name: &'static str, duration_ms: f32) {
-        self.expr_name = name;
-        self.expr_from = self.expr_weights.clone();
-        self.expr_to = EXPRESSION_NAMES.iter().map(|&n| (n, 0.0)).collect();
-        if let Some(slot) = self.expr_to.get_mut(name) {
-            *slot = 1.0;
-        }
-        self.expr_elapsed_ms = 0.0;
-        self.expr_duration_ms = duration_ms.max(0.0);
-        if duration_ms <= 0.0 {
-            self.expr_weights = self.expr_to.clone();
-        }
     }
 
     fn apply_scene_preview(
@@ -223,6 +153,7 @@ impl PetAppState {
         mood: Option<MoodPresentation>,
     ) {
         self.forced_preview = true;
+        let eyes_closed = mood.as_ref().is_some_and(|m| m.eyes_closed);
         self.preview_mood = mood;
         self.pet.set_forced_behavior(if walking {
             ForcedBehavior::ForceWalk
@@ -231,30 +162,38 @@ impl PetAppState {
         } else {
             ForcedBehavior::ForceIdle
         });
-        self.set_pose_target(pose_name, 0.0);
-        self.set_expr_target(expr_name, 0.0);
-        self.walk_phase = walk_phase;
-        self.walk_blend = if walking { 1.0 } else { 0.0 };
-        self.facing_current = facing_to_yaw_rad(facing);
-        self.total_time_sec = 1.2;
+        self.blender.apply_preview(
+            pose_name,
+            expr_name,
+            walking,
+            facing,
+            walk_phase,
+            eyes_closed,
+        );
     }
 
     fn refresh_live_desktop_environment(&mut self, now_sec: f64) {
         if rune::is_headless() {
             return;
         }
-        // Periodically refresh per-monitor work area / DPI and best sit candidate (4 Hz).
-        if now_sec - self.last_env_poll_t >= 0.25 {
+        // Periodically refresh per-monitor work area / DPI and sit candidates (4 Hz).
+        if !self.drag_active && now_sec - self.last_env_poll_t >= 0.25 {
             self.last_env_poll_t = now_sec;
             let win_opt = WINDOW_SLOT
                 .get()
                 .and_then(|s| s.lock().ok())
                 .and_then(|g| g.clone());
             let (wa, scale) = win32::window_work_area_and_scale(win_opt.as_ref());
+            let env_changed = wa != self.pet.work_area() || (scale - self.pet.scale()).abs() > 1e-4;
             self.scale = scale;
             self.pet.set_environment(wa, scale);
+            if env_changed {
+                // Force immediate window reposition on DPI or monitor change.
+                self.last_window_pos = None;
+            }
             if self.pet.tracked_window_id().is_none() {
-                self.cached_candidate = win32::find_sit_candidate(self.my_pid, wa, scale);
+                self.cached_candidates = win32::find_sit_candidates(self.my_pid, wa, scale);
+                self.pet.sync_window_candidates(&self.cached_candidates);
             }
         }
 
@@ -263,7 +202,8 @@ impl PetAppState {
         let tracked = self.pet.tracked_window_id().and_then(|id| {
             win32::query_window_candidate(id, self.my_pid, Some(self.pet.sit_anchor_center_x()))
         });
-        self.pet.sync_window_targets(tracked, self.cached_candidate);
+        self.pet
+            .sync_window_targets(tracked, self.cached_candidates.first().copied());
     }
 
     fn step_animation(&mut self, dt_sec: f32, now_sec: f64) -> bool {
@@ -280,7 +220,10 @@ impl PetAppState {
         }
 
         let mood_override = self.harness.current().cloned();
-        let snap = if mood_override.is_some() && !self.drag_active {
+        if mood_override.is_some() {
+            self.pet.notify_user_activity();
+        }
+        let mut snap = if mood_override.is_some() && !self.drag_active {
             // While reacting to a harness mood, stay attentive in place.
             let mut s = self.pet.snapshot();
             s.walking = false;
@@ -291,11 +234,18 @@ impl PetAppState {
             self.pet.step(dt_sec)
         };
 
+        self.sync_window_position(snap.x, snap.y);
+        let pat_triggered = self.update_cursor_interactions(dt_sec, snap);
+        if pat_triggered {
+            self.pet.on_petting();
+            snap = self.pet.snapshot();
+        }
+
         let target_pose = mood_override
             .as_ref()
             .map(|m| m.pose)
             .unwrap_or(snap.pose);
-        let target_expr = if self.delight.happy_boost_sec > 0.0 {
+        let target_expr = if self.delight.happy_boost_sec > 0.0 || self.delight.petting_intensity > 0.35 {
             "happy"
         } else {
             mood_override
@@ -303,84 +253,52 @@ impl PetAppState {
                 .map(|m| m.expression)
                 .unwrap_or(snap.expression)
         };
+        let eyes_closed = mood_override.as_ref().is_some_and(|m| m.eyes_closed)
+            || (mood_override.is_none() && snap.eyes_closed);
+        let gaze_active = !snap.walking
+            && !eyes_closed
+            && !self.drag_active
+            && snap.mode != PetMode::Fall;
 
-        if target_pose != self.pose_name {
-            let dur = if target_pose == "wave" { 260.0 } else { 360.0 };
-            self.set_pose_target(target_pose, dur);
-        }
-        if target_expr != self.expr_name {
-            self.set_expr_target(target_expr, 220.0);
-        }
-
-        let dt_ms = dt_sec * 1000.0;
-        self.total_time_sec += dt_sec;
-
-        if self.pose_duration_ms > 0.0 && self.pose_elapsed_ms < self.pose_duration_ms {
-            self.pose_elapsed_ms = (self.pose_elapsed_ms + dt_ms).min(self.pose_duration_ms);
-            self.pose_current = interpolate_pose(
-                &self.pose_from,
-                &self.pose_to,
-                self.pose_elapsed_ms / self.pose_duration_ms,
-            );
-        } else {
-            self.pose_current = self.pose_to.clone();
-        }
-
-        if self.expr_duration_ms > 0.0 && self.expr_elapsed_ms < self.expr_duration_ms {
-            self.expr_elapsed_ms = (self.expr_elapsed_ms + dt_ms).min(self.expr_duration_ms);
-            let alpha = ease_in_out_cubic(self.expr_elapsed_ms / self.expr_duration_ms);
-            for &n in &EXPRESSION_NAMES {
-                let a = self.expr_from.get(n).copied().unwrap_or(0.0);
-                let b = self.expr_to.get(n).copied().unwrap_or(0.0);
-                self.expr_weights.insert(n, a + (b - a) * alpha);
-            }
-        } else {
-            self.expr_weights = self.expr_to.clone();
-        }
-
-        // Tie walk animation strictly to actual physical horizontal pixels moved (DPI-scaled)
-        // and smoothly blend into/out of idle so starts and stops never snap.
-        if snap.walking && snap.dx_px.abs() > 1e-4 {
-            self.walk_phase += compute_walk_phase_delta(snap.dx_px, self.scale);
-        }
-        let blend_target = if snap.walking {
-            (0.25 + 0.75 * snap.walk_speed_factor).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let blend_rate = if blend_target > self.walk_blend { 4.5 } else { 3.8 };
-        let delta = blend_target - self.walk_blend;
-        let max_step = blend_rate * dt_sec;
-        if delta.abs() <= max_step {
-            self.walk_blend = blend_target;
-        } else {
-            self.walk_blend += delta.signum() * max_step;
-        }
-        if !snap.walking && self.walk_blend <= 1e-3 {
-            self.walk_blend = 0.0;
-            // Anchor next walk cleanly from neutral passing stance.
-            self.walk_phase = std::f32::consts::FRAC_PI_2;
-        }
-
-        let target_yaw = facing_to_yaw_rad(snap.facing);
-        let lerp = (dt_sec * 8.0).min(1.0);
-        self.facing_current += (target_yaw - self.facing_current) * lerp;
-
-        self.sync_window_position(snap.x, snap.y);
-        self.update_cursor_interactions(dt_sec, snap.walking);
+        self.blender.step(BlenderInput {
+            dt_sec,
+            target_pose,
+            target_expression: target_expr,
+            walking: snap.walking && mood_override.is_none(),
+            walk_dx_px: snap.dx_px,
+            walk_speed_factor: snap.walk_speed_factor,
+            scale: self.scale,
+            facing: snap.facing,
+            eyes_closed,
+            carry_sway: snap.carry_sway,
+            head_yaw: if gaze_active { self.delight.head_yaw } else { 0.0 },
+            head_pitch: if gaze_active { self.delight.head_pitch } else { 0.0 },
+            neck_yaw: if gaze_active { self.delight.neck_yaw } else { 0.0 },
+            neck_pitch: if gaze_active { self.delight.neck_pitch } else { 0.0 },
+            chest_yaw: if gaze_active { self.delight.chest_yaw } else { 0.0 },
+            petting_intensity: if !self.drag_active && snap.mode != PetMode::Fall {
+                self.delight.petting_intensity
+            } else {
+                0.0
+            },
+        });
 
         snap.should_render
     }
 
-    fn update_cursor_interactions(&mut self, dt_sec: f32, walking: bool) {
+    fn update_cursor_interactions(
+        &mut self,
+        dt_sec: f32,
+        snap: crate::pet_state::PetSnapshot,
+    ) -> bool {
         if rune::is_headless() {
-            return;
+            return false;
         }
         let win_opt = WINDOW_SLOT
             .get()
             .and_then(|s| s.lock().ok())
             .and_then(|g| g.clone());
-        let Some(win) = win_opt else { return };
+        let Some(win) = win_opt else { return false };
 
         let cursor_px = win32::cursor_position_px();
         let rect_px = win32::window_rect_px(&win);
@@ -388,10 +306,11 @@ impl PetAppState {
         let mut cursor_norm = None;
         let mut cursor_rel_logical = None;
         if let (Some((cx, cy)), Some((wx, wy, ww, wh))) = (cursor_px, rect_px) {
-            let scale = self.scale.max(0.5) as f32;
-            cursor_rel_logical = Some(((cx - wx) as f32 / scale, (cy - wy) as f32 / scale));
-            let nx = (cx - wx) as f32 / ww.max(1) as f32;
-            let ny = (cy - wy) as f32 / wh.max(1) as f32;
+            let ww_f = ww.max(1) as f32;
+            let wh_f = wh.max(1) as f32;
+            let nx = (cx - wx) as f32 / ww_f;
+            let ny = (cy - wy) as f32 / wh_f;
+            cursor_rel_logical = Some((nx * PET_WINDOW_WIDTH, ny * PET_WINDOW_HEIGHT));
             if (0.0..=1.0).contains(&nx) && (0.0..=1.0).contains(&ny) {
                 cursor_norm = Some((nx, ny));
             }
@@ -404,9 +323,12 @@ impl PetAppState {
             .unwrap_or_default();
 
         // A failed platform update leaves the applied state unchanged and is retried next frame.
-        let _ = self.click_through.apply(cursor_norm, self.drag_active, &mask, |desired| {
-            win.set_click_through(desired)
-        });
+        let keep_capture = self.drag_active || self.press_origin_px.is_some();
+        let _ = self
+            .click_through
+            .apply(cursor_norm, keep_capture, &mask, |desired| {
+                win.set_click_through(desired)
+            });
 
         let head_norm = mask
             .head_center()
@@ -415,12 +337,14 @@ impl PetAppState {
             head_norm.x * PET_WINDOW_WIDTH,
             head_norm.y * PET_WINDOW_HEIGHT,
         );
-        let sleeping = self
+        let harness_sleeping = self
             .active_mood()
             .is_some_and(|m| m.mood == HarnessMood::Sleep);
-        let allow_gaze = !walking && !sleeping && !self.drag_active;
+        // Allow cursor gaze & slow-stroke petting (including waking local idle sleep).
+        let allow_interact =
+            !snap.walking && !harness_sleeping && !self.drag_active && snap.mode != PetMode::Fall;
         self.delight
-            .update(dt_sec, cursor_rel_logical, head_center_px, allow_gaze);
+            .update(dt_sec, cursor_rel_logical, head_center_px, allow_interact)
     }
 
     fn sync_window_position(&mut self, phys_x: i32, phys_y: i32) {
@@ -437,91 +361,7 @@ impl PetAppState {
     }
 
     pub fn evaluate_frame_pose(&self) -> EvaluatedPose {
-        let breathing = compute_idle_breathing(self.total_time_sec);
-        let secondary = if self.forced_preview {
-            Pose::new()
-        } else {
-            compute_pose_secondary_motion(self.pose_name, self.total_time_sec)
-        };
-        let walk_weight = if self.forced_preview {
-            if self.walk_blend > 0.0 { 1.0 } else { 0.0 }
-        } else if self.active_mood().is_some() {
-            0.0
-        } else {
-            ease_in_out_cubic(self.walk_blend)
-        };
-        let (walk_offsets, bob_y) = if walk_weight > 1e-4 {
-            let (raw_off, raw_bob) = compute_walk_offsets(self.walk_phase);
-            (scale_pose(&raw_off, walk_weight), raw_bob * walk_weight)
-        } else {
-            (Pose::new(), 0.0)
-        };
-        let breath_weight = 1.0 - walk_weight * 0.65;
-
-        let mut bone_names: BTreeSet<&str> = BTreeSet::new();
-        for k in self.pose_current.keys() {
-            bone_names.insert(k.as_str());
-        }
-        for k in breathing.keys() {
-            bone_names.insert(k.as_str());
-        }
-        for k in secondary.keys() {
-            bone_names.insert(k.as_str());
-        }
-        for k in walk_offsets.keys() {
-            bone_names.insert(k.as_str());
-        }
-        for b in [
-            "head",
-            "leftUpperLeg",
-            "rightUpperLeg",
-            "leftLowerLeg",
-            "rightLowerLeg",
-            "leftFoot",
-            "rightFoot",
-        ] {
-            bone_names.insert(b);
-        }
-
-        let mut combined = Pose::new();
-        for bone in bone_names {
-            let base = self.pose_current.get(bone).copied().unwrap_or([0.0; 3]);
-            let add = breathing.get(bone).copied().unwrap_or([0.0; 3]);
-            let sec = secondary.get(bone).copied().unwrap_or([0.0; 3]);
-            let walk = walk_offsets.get(bone).copied().unwrap_or([0.0; 3]);
-            let gaze = if bone == "head" && !self.forced_preview {
-                [self.delight.head_pitch, self.delight.head_yaw, 0.0]
-            } else {
-                [0.0; 3]
-            };
-            combined.insert(
-                bone.to_string(),
-                [
-                    base[0] + add[0] * breath_weight + sec[0] + walk[0] + gaze[0],
-                    base[1] + add[1] * breath_weight + sec[1] + walk[1] + gaze[1],
-                    base[2] + add[2] * breath_weight + sec[2] + walk[2] + gaze[2],
-                ],
-            );
-        }
-
-        let mut expressions = self.expr_weights.clone();
-        let happy = expressions.get("happy").copied().unwrap_or(0.0);
-        let eyes_closed = self.active_mood().is_some_and(|m| m.eyes_closed);
-        let blink = if eyes_closed {
-            1.0
-        } else if happy > 0.5 || self.forced_preview {
-            0.0
-        } else {
-            compute_auto_blink(self.total_time_sec, 3.6, 0.16)
-        };
-        expressions.insert("blink", blink);
-
-        EvaluatedPose {
-            pose: combined,
-            root_yaw: self.facing_current,
-            root_bob_y: bob_y,
-            expressions,
-        }
+        self.blender.evaluate(self.forced_preview)
     }
 }
 
@@ -743,7 +583,8 @@ fn poll(s: &mut PetAppState, t: f64, tx: &mut Tx) -> bool {
 
     if s.pet.is_paused() {
         // Still keep click-through responsive while paused at 10 Hz
-        s.update_cursor_interactions(0.1, false);
+        let snap = s.pet.snapshot();
+        let _ = s.update_cursor_interactions(0.1, snap);
         tx.wake_after(Duration::from_millis(100));
         return changed;
     }
@@ -777,31 +618,77 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
         .key("pet-surface")
         .w_full()
         .h_full()
-        .on_drag(|s: &mut PetAppState, d, _tx| {
-            let Some((sx, sy)) = d.screen_point() else {
-                return;
-            };
-            let px = sx as f32;
-            let py = sy as f32;
+        .on_drag(|s: &mut PetAppState, d, tx| {
+            let [wx, wy] = d.window_point();
             match d.phase {
                 Phase::Down => {
-                    s.drag_active = true;
-                    s.pet.start_drag(px, py);
+                    let Some((sx, sy)) = d.screen_point() else {
+                        return;
+                    };
+                    s.press_origin_px = Some((sx as f32, sy as f32));
+                    s.press_window_pt = Some((wx, wy));
+                    s.drag_active = false;
                 }
                 Phase::Move => {
+                    let Some((sx, sy)) = d.screen_point() else {
+                        return;
+                    };
+                    let px = sx as f32;
+                    let py = sy as f32;
+                    if !s.drag_active
+                        && let Some((ox, oy)) = s.press_origin_px
+                    {
+                        let thresh = scaled_px(DRAG_THRESHOLD_DIP, s.scale).max(4) as f32;
+                        if (px - ox).hypot(py - oy) >= thresh {
+                            s.drag_active = true;
+                            s.pet.start_drag(ox, oy);
+                        }
+                    }
                     if s.drag_active {
+                        let (wa, scale) = win32::monitor_work_area_and_scale_at(
+                            px.round() as i32,
+                            py.round() as i32,
+                        );
+                        if wa != s.pet.work_area() || (scale - s.scale).abs() > 1e-4 {
+                            s.scale = scale;
+                            s.pet.set_environment(wa, scale);
+                            s.last_window_pos = None;
+                        }
                         s.pet.move_drag(px, py);
                     }
                 }
                 Phase::Up => {
-                    if s.drag_active {
-                        s.drag_active = false;
-                        let drop_cand = win32::find_sit_candidate(
+                    let was_drag = s.drag_active;
+                    let press_pt = s.press_window_pt.take();
+                    s.press_origin_px = None;
+                    s.drag_active = false;
+                    if was_drag {
+                        if let Some((sx, sy)) = d.screen_point() {
+                            let (wa, scale) = win32::monitor_work_area_and_scale_at(sx, sy);
+                            s.scale = scale;
+                            s.pet.set_environment(wa, scale);
+                        }
+                        let cands = win32::find_sit_candidates(
                             s.my_pid,
                             s.pet.work_area(),
                             s.pet.scale(),
                         );
-                        s.pet.end_drag(drop_cand);
+                        s.cached_candidates = cands.clone();
+                        s.pet.sync_window_candidates(&cands);
+                        s.pet.end_drag_with_candidates(&cands);
+                        tx.wake_after(Duration::from_millis(16));
+                    } else if !d.cancelled() && d.clicks == 1 {
+                        let (lx, ly) = press_pt.unwrap_or((wx, wy));
+                        let nx = (lx / PET_WINDOW_WIDTH).clamp(0.0, 1.0);
+                        let ny = (ly / PET_WINDOW_HEIGHT).clamp(0.0, 1.0);
+                        let zone = HIT_MASK_SLOT
+                            .get()
+                            .and_then(|m| m.lock().ok())
+                            .and_then(|mask| mask.hit_zone(nx, ny))
+                            .unwrap_or(ClickZone::Body);
+                        s.pet.on_click(zone);
+                        s.delight.trigger_click_sparkles(lx, (ly - 12.0).max(16.0));
+                        tx.wake_after(Duration::from_millis(16));
                     }
                 }
             }
