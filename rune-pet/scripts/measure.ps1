@@ -3,7 +3,7 @@ param(
     [string]$Mode = "both",
     [int]$IdleSeconds = 60,
     [int]$WalkSeconds = 60,
-    [string]$ExePath = "$PSScriptRoot\..\target\release\rune-pet.exe"
+    [string]$ExePath = "$PSScriptRoot\..\target\release\pi-avatar.exe"
 )
 
 $ErrorActionPreference = 'Stop'

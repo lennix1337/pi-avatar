@@ -2150,6 +2150,7 @@ name = "rune-pet"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "find-msvc-tools",
  "glam",
  "image",
  "rune",

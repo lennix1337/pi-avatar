@@ -5,6 +5,13 @@ edition = "2024"
 license = "MIT"
 description = "Native Rust VRM desktop pet built with the Rune GPU UI framework"
 
+[[bin]]
+name = "pi-avatar"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.build-dependencies]
+find-msvc-tools = "0.1.15"
+
 [dependencies]
 rune = { path = ".rune-cache/crates/rune", default-features = false, features = ["embedded-fonts", "tooling"] }
 wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "dx12"] }
@@ -20,6 +27,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
