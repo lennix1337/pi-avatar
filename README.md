@@ -12,7 +12,7 @@ Pet de mesa nativo em Rust: um avatar 3D VRM que anda pela barra de tarefas do W
 cd rune-pet
 pwsh scripts/setup-rune.ps1
 cargo build --release
-.\target\release\rune-pet.exe
+.\target\release\pi-avatar.exe
 ```
 
 Para ligar o humor do pet a um harness, passe `--state-file caminho\estado.json` com os campos `ciRed`, `merged`, `workers`, `waitingOperator` e `idleMinutes`.

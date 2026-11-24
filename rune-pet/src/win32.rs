@@ -11,7 +11,7 @@ mod imp {
     use super::{Rect, WindowCandidate};
     use crate::pet_state::is_valid_sit_target;
     use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
     };
@@ -23,12 +23,13 @@ mod imp {
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, GetDpiForSystem,
         GetDpiForWindow, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
     };
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GW_HWNDPREV, GWL_EXSTYLE, GWL_STYLE, GetClassNameW, GetCursorPos,
         GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
-        IsIconic, IsWindow, IsWindowVisible, SPI_GETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        IsIconic, IsWindow, IsWindowVisible, SPI_GETWORKAREA, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-        SystemParametersInfoW, WS_CHILD, WS_DISABLED, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        SystemParametersInfoW, WM_NCDESTROY, WM_STYLECHANGING, WS_CHILD, WS_DISABLED, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
         WS_EX_TRANSPARENT,
     };
 
@@ -511,14 +512,40 @@ mod imp {
             .next()
     }
 
+    fn tool_window_style(ex: u32) -> u32 {
+        (ex | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+    }
+
+    unsafe extern "system" fn tool_window_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        id: usize,
+        _: usize,
+    ) -> LRESULT {
+        // SAFETY: Win32 supplies STYLESTRUCT during this notification and owns the subclass chain.
+        unsafe {
+            if msg == WM_STYLECHANGING && wparam as i32 == GWL_EXSTYLE {
+                // winit rebuilds the extended styles when the transparent-area hit test changes.
+                let styles = &mut *(lparam as *mut STYLESTRUCT);
+                styles.styleNew = tool_window_style(styles.styleNew);
+            } else if msg == WM_NCDESTROY {
+                RemoveWindowSubclass(hwnd, Some(tool_window_proc), id);
+            }
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        }
+    }
+
     pub fn apply_tool_window_style(win: &rune::WindowHandle) {
         if let Some(hwnd) = hwnd_of(win) {
             // SAFETY: updating extended style bits on our own live window on the UI thread.
             unsafe {
-                let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-                let next = (ex | (WS_EX_TOOLWINDOW as isize)) & !(WS_EX_APPWINDOW as isize);
+                SetWindowSubclass(hwnd, Some(tool_window_proc), 0, 0);
+                let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+                let next = tool_window_style(ex);
                 if next != ex {
-                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next as isize);
                     SetWindowPos(
                         hwnd,
                         std::ptr::null_mut(),

@@ -1,11 +1,11 @@
-# Rune Desktop Pet (`rune-pet`)
+# Pi Avatar
 
 Desktop pet nativo em Rust (sem WebView e sem Electron) renderizando o avatar 3D VRM 1.0 (`../models/avatar.vrm`) com o framework **Rune** (`anomalyco/rune`, rev `2312d60bf07a300a3142dace9d067b24f2454488`).
 
 ## Arquitetura e notas sobre o Rune
 
 - **Janela nativa transparente e always-on-top**: o Rune oferece `WindowOptions { transparent: true, borderless: true, always_on_top: true, resizable: false, min_size: Some((0.0, 0.0)), ... }` com DirectComposition (`WS_EX_NOREDIRECTIONBITMAP`) no Windows, além de `App::open_inactive()` e `WindowHandle::set_position((x, y))`.
-- **Ocultar da barra de tarefas no Windows**: o `WindowSpec` padrão do Rune não expõe `skip_taskbar`, então `src/win32.rs` aplica `WS_EX_TOOLWINDOW` (removendo `WS_EX_APPWINDOW`) usando o hook oficial `WindowHandle::with_raw_handle`.
+- **Fora da barra de tarefas e do Alt+Tab no Windows**: o pet ganha `WS_EX_TOOLWINDOW` e perde `WS_EX_APPWINDOW` antes de aparecer. Esses dois bits são preservados quando o click-through muda.
 - **Renderização 3D VRM 1.0**: o renderizador padrão do Rune (`uber-quad` SDF + Taffy + Parley) é 2D e não inclui cena 3D nem loader VRM. Em vez de criar um segundo dispositivo GPU ou fazer readback para CPU, o `rune-pet` implementa um `rune::compose::Compositor<PetAppState>` (`src/renderer.rs`) que desenha diretamente no `wgpu::Device`, `wgpu::Queue` e `TextureView` do próprio Rune, com:
   - Loader GLB/VRM 1.0 nativo (`src/vrm.rs`): ossos humanoides normalizados (fórmula exata do `@pixiv/three-vrm`), `VRMC_node_constraint` (`aim`, `roll`, `rotation` para mangas/ombros/coxas) e morph targets esparsos/densos para expressões (`happy`, `blink`, etc.).
   - Shader MToon (`src/vrm.wgsl`) com skinning linear na GPU, MSAA 4× em alvo transparente e texturas HD até `1024×1024` com mipmaps em streaming (buffers CPU liberados imediatamente após upload para VRAM).
@@ -13,6 +13,8 @@ Desktop pet nativo em Rust (sem WebView e sem Electron) renderizando o avatar 3D
 - **Tray e interação**: bandeja do sistema nativa via `rune::Tray` (`Pausar / Retomar` e `Sair`), arraste pela tela (`El::on_drag`) e clique duplo (`El::on_double_press_tx`) alternando poses `cheer` (braços levantados) e `wave`.
 
 ## Como preparar e compilar
+
+No Windows, use o Rust com toolchain MSVC e o Windows SDK (inclui `rc.exe` para embutir o ícone e os metadados do EXE).
 
 ```powershell
 cd rune-pet
@@ -25,15 +27,23 @@ cargo build --release
 
 ```powershell
 # Desktop pet ao vivo na taskbar (bandeja: Pausar / Sair)
-.\target\release\rune-pet.exe
-.\target\release\rune-pet.exe --state-file caminho\harness-state.json   # reações do harness (JSON local)
+.\target\release\pi-avatar.exe
+.\target\release\pi-avatar.exe --state-file caminho\harness-state.json   # reações do harness (JSON local)
 
 # Medição solo: imprime avg/min/p5 FPS e working set (RAM) após N segundos e sai
-.\target\release\rune-pet.exe --force-walk --measure-secs 25 --stats-file stats.json
+.\target\release\pi-avatar.exe --force-walk --measure-secs 25 --stats-file stats.json
 
 # Capturas PNG headless usando o tooling nativo do Rune (--snap + --scene)
-.\target\release\rune-pet.exe --snap docs\rune-shot-idle.png --scene idle --scale 2
+.\target\release\pi-avatar.exe --snap docs\rune-shot-idle.png --scene idle --scale 2
 # cenas: idle, walk, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat
+```
+
+A versão release do Windows abre sem console e fica acessível pelo ícone **Pi Avatar**
+na bandeja. Clique com o botão direito no ícone e escolha **Sair** para fechar.
+Para gravar a saída de `--measure-secs`, use `--stats-file stats.json` ou, no cmd:
+
+```cmd
+target\release\pi-avatar.exe --measure-secs 25 > stats.json
 ```
 
 No modo ocioso, o pet alterna olhares laterais e pequenos suspiros. Ao aproximar o cursor,

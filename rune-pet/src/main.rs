@@ -1,11 +1,13 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! Native Rust desktop pet v2 built with the Rune GPU UI framework and a VRM 1.0 `Compositor`.
 //!
 //! Live desktop run:
-//!   `rune-pet.exe`
-//!   `rune-pet.exe --state-file path/to/harness-state.json`
-//!   `rune-pet.exe --measure-secs 25` (or `--force-idle` / `--force-walk`)
+//!   `pi-avatar.exe`
+//!   `pi-avatar.exe --state-file path/to/harness-state.json`
+//!   `pi-avatar.exe --measure-secs 25` (or `--force-idle` / `--force-walk`)
 //! Headless PNG snapshots (via Rune's built-in tooling):
-//!   `rune-pet.exe --snap docs/rune-shot-idle.png --scene idle --scale 2`
+//!   `pi-avatar.exe --snap docs/rune-shot-idle.png --scene idle --scale 2`
 
 mod animation;
 mod delight;
@@ -365,30 +367,24 @@ impl PetAppState {
     }
 }
 
+const APP_NAME: &str = "Pi Avatar";
+
 fn make_tray_icon() -> TrayIcon {
-    let size: u32 = 16;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - 7.5;
-            let dy = y as f32 - 7.5;
-            let idx = ((y * size + x) * 4) as usize;
-            if (dx * dx + dy * dy).sqrt() <= 6.5 {
-                rgba[idx] = 110;
-                rgba[idx + 1] = 231;
-                rgba[idx + 2] = 183;
-                rgba[idx + 3] = 255;
-            }
-        }
-    }
-    TrayIcon::rgba(size, size, rgba)
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../assets/pi-avatar-32.png"),
+        image::ImageFormat::Png,
+    )
+    .expect("embedded Pi Avatar icon is a valid PNG")
+    .into_rgba8();
+    TrayIcon::rgba(image.width(), image.height(), image.into_raw())
 }
 
 fn tray_menu(paused: bool) -> Vec<TrayItem> {
+    let pause_label = if paused { "Retomar Pi Avatar" } else { "Pausar Pi Avatar" };
     vec![
-        TrayItem::action("pause", if paused { "Retomar (Resume)" } else { "Pausar (Pause)" }),
+        TrayItem::action("pause", pause_label),
         TrayItem::Separator,
-        TrayItem::action("quit", "Sair (Quit)"),
+        TrayItem::action("quit", "Sair"),
     ]
 }
 
@@ -513,8 +509,8 @@ fn setup(s: &mut PetAppState, waker: Waker) {
 
     let tray_queue = TRAY_QUEUE.get().unwrap().clone();
     let tray_waker = waker.clone();
-    let spec = TraySpec::new("vitrine-rune-pet", "Vitrine Avatar Pet (Rune)", make_tray_icon())
-        .tooltip("Vitrine Avatar Desktop Pet (Rune)")
+    let spec = TraySpec::new("pi-avatar", APP_NAME, make_tray_icon())
+        .tooltip(APP_NAME)
         .menu(tray_menu(false));
     if let Ok(tray) = Tray::new(spec, move |ev| {
         if let Ok(mut q) = tray_queue.lock() {
@@ -894,7 +890,7 @@ fn main() {
         setup: Some(setup),
         poll: Some(poll),
         ..AppSpec::new(
-            "Vitrine Avatar Pet (Rune)",
+            APP_NAME,
             (PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT),
             init_state,
             view,
@@ -906,7 +902,8 @@ fn main() {
         borderless: true,
         click_through: false,
         always_on_top: true,
-        visible: true,
+        // Set the tool-window style before Explorer ever sees a visible pet.
+        visible: !cfg!(windows),
         position: Some((init_x, init_y)),
         physical_size: None,
         min_size: Some((0.0, 0.0)),
@@ -926,6 +923,8 @@ fn main() {
             if let Ok(mut guard) = win_slot_hook.lock() {
                 *guard = Some(win.clone());
             }
+            #[cfg(windows)]
+            win.show();
         })
         .run();
 
