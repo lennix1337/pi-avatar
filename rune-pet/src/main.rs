@@ -76,9 +76,13 @@ pub struct PetAppState {
     last_window_pos: Option<(i32, i32)>,
     last_harness_poll_t: f64,
     last_env_poll_t: f64,
+    sense_desktop: bool,
+    next_sense_t: f64,
+    ambient_drowsiness: f32,
     cached_candidates: Vec<WindowCandidate>,
 
     forced_preview: bool,
+    preview_motion: bool,
     press_origin_px: Option<(f32, f32)>,
     press_window_pt: Option<(f32, f32)>,
     drag_active: bool,
@@ -116,8 +120,12 @@ impl PetAppState {
             last_window_pos: None,
             last_harness_poll_t: -10.0,
             last_env_poll_t: -10.0,
+            sense_desktop: forced == ForcedBehavior::Auto,
+            next_sense_t: 0.0,
+            ambient_drowsiness: 0.0,
             cached_candidates: Vec::new(),
             forced_preview: false,
+            preview_motion: false,
             press_origin_px: None,
             press_window_pt: None,
             drag_active: false,
@@ -215,6 +223,11 @@ impl PetAppState {
         }
 
         self.refresh_live_desktop_environment(now_sec);
+        if self.sense_desktop && !rune::is_headless() && now_sec >= self.next_sense_t {
+            self.next_sense_t = now_sec + 1.0;
+            self.ambient_drowsiness = win32::local_idle_and_hour()
+                .map_or(0.0, |(idle, hour)| idle_drowsiness(idle, hour));
+        }
 
         // Poll local JSON harness state file every 500 ms (skips disk read when unchanged).
         if now_sec - self.last_harness_poll_t >= 0.5 {
@@ -278,6 +291,7 @@ impl PetAppState {
             eyes: if gaze_active { self.delight.eyes } else { [0.0; 2] },
             cursor_attention: gaze_active && self.delight.cursor_proximity > 0.1,
             harness_mood: mood_override.map(|(mood, _, _, _)| mood),
+            ambient_drowsiness: self.ambient_drowsiness,
             petting_intensity: if !self.drag_active && snap.mode != PetMode::Fall {
                 self.delight.petting_intensity
             } else {
@@ -363,7 +377,7 @@ impl PetAppState {
     }
 
     pub fn evaluate_frame_pose(&self) -> EvaluatedPose {
-        self.blender.evaluate(self.forced_preview)
+        self.blender.evaluate(self.forced_preview && !self.preview_motion)
     }
 }
 
@@ -680,11 +694,12 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
                         let zone = HIT_MASK_SLOT
                             .get()
                             .and_then(|m| m.lock().ok())
-                            .and_then(|mask| mask.hit_zone(nx, ny))
-                            .unwrap_or(ClickZone::Body);
-                        s.pet.on_click(zone);
-                        s.delight.trigger_click_sparkles(lx, (ly - 12.0).max(16.0));
-                        tx.wake_after(Duration::from_millis(16));
+                            .and_then(|mask| mask.hit_zone(nx, ny));
+                        if let Some(zone) = zone {
+                            s.pet.on_click(zone);
+                            s.delight.trigger_click_sparkles(lx, (ly - 12.0).max(16.0), zone);
+                            tx.wake_after(Duration::from_millis(16));
+                        }
                     }
                 }
             }
@@ -783,6 +798,33 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
     root
 }
 
+fn idle_drowsiness(idle_secs: u32, hour: u16) -> f32 {
+    let onset = if (7..22).contains(&hour) { 90 } else { 45 };
+    animation::smooth_ramp(idle_secs.saturating_sub(onset) as f32 / 60.0)
+}
+
+#[test]
+fn inactivity_is_not_inferred_from_hour_alone() {
+    assert_eq!(idle_drowsiness(0, 23), 0.0);
+    assert_eq!(idle_drowsiness(60, 12), 0.0);
+    assert!(idle_drowsiness(60, 23) > 0.0);
+    assert_eq!(idle_drowsiness(180, 12), 1.0);
+}
+
+fn scene_drowsy(s: &mut PetAppState) {
+    scene_idle(s);
+    s.preview_motion = true;
+    for _ in 0..75 {
+        s.blender.step(BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "idle",
+            target_expression: "neutral",
+            ambient_drowsiness: idle_drowsiness(120, 23),
+            ..Default::default()
+        });
+    }
+}
+
 fn scene_idle(s: &mut PetAppState) {
     s.apply_scene_preview("idle", "neutral", false, 0, 0.0, None);
 }
@@ -791,13 +833,37 @@ fn scene_walk(s: &mut PetAppState) {
     s.apply_scene_preview("idle", "neutral", true, 1, 0.25, None);
 }
 
+fn scene_landing(s: &mut PetAppState) {
+    s.apply_scene_preview("fall", "surprised", false, 0, 0.0, None);
+    s.preview_motion = true;
+    for _ in 0..8 {
+        s.blender.step(BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "land",
+            target_expression: "relaxed",
+            ..Default::default()
+        });
+    }
+}
+
 fn scene_arms_up(s: &mut PetAppState) {
     s.apply_scene_preview("cheer", "happy", false, 0, 0.0, None);
 }
 
 fn scene_mood_worried(s: &mut PetAppState) {
     let m = mood_preset(HarnessMood::Worried, 0);
+    let input = BlenderInput {
+        dt_sec: 1.0 / 60.0,
+        target_pose: m.pose,
+        target_expression: m.expression,
+        harness_mood: Some(m.mood),
+        ..Default::default()
+    };
     s.apply_scene_preview(m.pose, m.expression, false, 0, 0.0, Some(m));
+    s.preview_motion = true;
+    for _ in 0..240 {
+        s.blender.step(input);
+    }
 }
 
 fn scene_mood_celebrate(s: &mut PetAppState) {
@@ -818,6 +884,12 @@ fn scene_mood_wave(s: &mut PetAppState) {
 fn scene_mood_sleep(s: &mut PetAppState) {
     let m = mood_preset(HarnessMood::Sleep, 0);
     s.apply_scene_preview(m.pose, m.expression, false, 0, 0.0, Some(m));
+}
+
+fn scene_tap_feet(s: &mut PetAppState) {
+    s.apply_scene_preview("react", "surprised", false, 0, 0.0, None);
+    s.delight.trigger_click_sparkles(110.0, 226.0, ClickZone::Feet);
+    s.delight.update(0.10, None, (0.0, 0.0), false);
 }
 
 fn scene_delight_pat(s: &mut PetAppState) {
@@ -879,6 +951,9 @@ fn main() {
         scenes: &[
             ("idle", scene_idle),
             ("walk", scene_walk),
+            ("landing", scene_landing),
+            ("drowsy", scene_drowsy),
+            ("tap-feet", scene_tap_feet),
             ("arms-up", scene_arms_up),
             ("mood-worried", scene_mood_worried),
             ("mood-celebrate", scene_mood_celebrate),

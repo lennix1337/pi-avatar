@@ -201,11 +201,15 @@ impl ClickThroughController {
 mod tests {
     use super::*;
     use crate::poses::load_poses;
-    use crate::vrm::VrmModel;
+    use crate::vrm::{RigFrame, VrmModel};
     use std::path::PathBuf;
 
-    fn sample_camera(aspect: f32) -> Mat4 {
-        crate::renderer::pet_camera_view_proj(aspect)
+    fn sample_mask(vrm: &VrmModel, pose: &crate::poses::Pose) -> AvatarHitMask {
+        let aspect = 220.0 / 280.0;
+        let vp = crate::renderer::pet_camera_view_proj(aspect);
+        let mut frame = RigFrame::default();
+        vrm.evaluate_frame(pose, 0.0, 0.0, &mut frame);
+        AvatarHitMask::from_world_bones(&frame.hit_bones, vp, aspect, None)
     }
 
     #[test]
@@ -213,10 +217,7 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let vrm = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
         let poses = load_poses(&root.join("poses.json")).unwrap();
-        let aspect = 220.0 / 280.0;
-        let vp = sample_camera(aspect);
-        let bone_pos = vrm.evaluate_humanoid_world_positions(&poses["idle"], 0.0, 0.0);
-        let mask = AvatarHitMask::from_world_bones(&bone_pos, vp, aspect, None);
+        let mask = sample_mask(&vrm, &poses["idle"]);
 
         assert!(mask.hit_test(0.5, 0.52), "torso center should hit");
         assert!(mask.hit_test(0.5, 0.30), "head should hit");
@@ -269,10 +270,7 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let vrm = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
         let poses = load_poses(&root.join("poses.json")).unwrap();
-        let aspect = 220.0 / 280.0;
-        let vp = sample_camera(aspect);
-        let bone_pos = vrm.evaluate_humanoid_world_positions(&poses["idle"], 0.0, 0.0);
-        let mask = AvatarHitMask::from_world_bones(&bone_pos, vp, aspect, None);
+        let mask = sample_mask(&vrm, &poses["idle"]);
 
         let head = mask.head_center().expect("head center present");
         assert_eq!(mask.hit_zone(head.x, head.y), Some(ClickZone::Head));
@@ -283,8 +281,7 @@ mod tests {
 
         // Verify click-through outside avatar silhouette remains intact across all new poses
         for pose_name in ["carry", "fall", "land", "jump", "stretch", "sleep", "sleep_sit", "react"] {
-            let bp = vrm.evaluate_humanoid_world_positions(&poses[pose_name], 0.0, 0.0);
-            let m = AvatarHitMask::from_world_bones(&bp, vp, aspect, None);
+            let m = sample_mask(&vrm, &poses[pose_name]);
             assert!(!m.hit_test(0.04, 0.04), "{pose_name}: top-left must stay click-through");
             assert!(!m.hit_test(0.96, 0.04), "{pose_name}: top-right must stay click-through");
             assert!(!m.hit_test(0.04, 0.95), "{pose_name}: bottom-left must stay click-through");

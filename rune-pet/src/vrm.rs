@@ -121,6 +121,20 @@ pub struct VrmModel {
     pub constraints: Vec<NodeConstraint>,
 }
 
+#[derive(Default)]
+struct RigScratch {
+    world: Vec<Mat4>,
+    local_rotations: Vec<Quat>,
+    world_rotations: Vec<Quat>,
+}
+
+#[derive(Default)]
+pub(crate) struct RigFrame {
+    pub skins: Vec<Vec<Mat4>>,
+    pub hit_bones: Vec<(&'static str, Vec3)>,
+    scratch: RigScratch,
+}
+
 impl VrmModel {
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = std::fs::read(path)
@@ -482,14 +496,7 @@ impl VrmModel {
     }
 
     /// Computes world positions of key humanoid bones for silhouette hit-testing & gaze targeting.
-    pub fn evaluate_humanoid_world_positions(
-        &self,
-        pose: &Pose,
-        root_yaw: f32,
-        root_bob_y: f32,
-    ) -> Vec<(&'static str, Vec3)> {
-        let mut world = Vec::new();
-        self.evaluate_world_matrices(pose, root_yaw, root_bob_y, &mut world);
+    fn hit_bones_from_world(&self, world: &[Mat4], out: &mut Vec<(&'static str, Vec3)>) {
         const TRACKED: &[&str] = &[
             "hips",
             "spine",
@@ -509,7 +516,8 @@ impl VrmModel {
             "rightLowerLeg",
             "rightFoot",
         ];
-        let mut out = Vec::with_capacity(TRACKED.len());
+        out.clear();
+        out.reserve(TRACKED.len());
         for &name in TRACKED {
             if let Some(rig) = self.humanoid_bones.get(name)
                 && let Some(m) = world.get(rig.node_index)
@@ -517,7 +525,6 @@ impl VrmModel {
                 out.push((name, m.w_axis.truncate()));
             }
         }
-        out
     }
 
     fn evaluate_world_matrices(
@@ -525,10 +532,12 @@ impl VrmModel {
         pose: &Pose,
         root_yaw: f32,
         root_bob_y: f32,
-        world: &mut Vec<Mat4>,
+        scratch: &mut RigScratch,
     ) {
+        let RigScratch { world, local_rotations, world_rotations } = scratch;
         let node_count = self.nodes.len();
-        let mut local_rotations: Vec<Quat> = self.nodes.iter().map(|n| n.rest_rotation).collect();
+        local_rotations.clear();
+        local_rotations.extend(self.nodes.iter().map(|n| n.rest_rotation));
 
         // Exact @pixiv/three-vrm normalized-to-raw formula:
         // raw_local = inv(parent_world_rest) * q_norm * parent_world_rest * rest_local
@@ -548,7 +557,7 @@ impl VrmModel {
         let root_rot = Quat::from_rotation_y(root_yaw);
 
         world.resize(node_count, Mat4::IDENTITY);
-        let mut world_rot = vec![Quat::IDENTITY; node_count];
+        world_rotations.resize(node_count, Quat::IDENTITY);
         let recompute_world = |local_rots: &[Quat], world: &mut [Mat4], world_rot: &mut [Quat]| {
             for &i in &self.topo_order {
                 let n = &self.nodes[i];
@@ -570,7 +579,7 @@ impl VrmModel {
             }
         };
 
-        recompute_world(&local_rotations, world, &mut world_rot);
+        recompute_world(local_rotations, world, world_rotations);
 
         // Apply VRM 1.0 VRMC_node_constraint (aim, roll, rotation) so sleeves, shoulders, and hips track limbs.
         if !self.constraints.is_empty() {
@@ -584,7 +593,7 @@ impl VrmModel {
                     ConstraintKind::Aim { aim_axis } => {
                         let dst_parent_rot = self.nodes[dst]
                             .parent
-                            .map(|p| world_rot[p])
+                            .map(|p| world_rotations[p])
                             .unwrap_or(root_rot);
                         let inv_dst_parent_rot = dst_parent_rot.inverse();
                         let a0 = (dst_parent_rot * (dst_rest * aim_axis)).normalize_or_zero();
@@ -625,37 +634,32 @@ impl VrmModel {
                 };
                 local_rotations[dst] = next_q.normalize();
             }
-            recompute_world(&local_rotations, world, &mut world_rot);
+            recompute_world(local_rotations, world, world_rotations);
         }
     }
 
-    /// Evaluates world matrices for all nodes given a normalized pose (Euler XYZ per humanoid bone),
-    /// root yaw (radians), and root vertical bob offset, then outputs per-skin joint matrices.
-    pub fn evaluate_skins(
-        &self,
-        pose: &Pose,
-        root_yaw: f32,
-        root_bob_y: f32,
-        out_skins: &mut [Vec<Mat4>],
-    ) {
-        let mut world = Vec::with_capacity(self.nodes.len());
-        self.evaluate_world_matrices(pose, root_yaw, root_bob_y, &mut world);
+    /// One hierarchy evaluation feeds both the GPU skinning and the click-through silhouette.
+    pub(crate) fn evaluate_frame(&self, pose: &Pose, root_yaw: f32, root_bob_y: f32, out: &mut RigFrame) {
+        self.evaluate_world_matrices(pose, root_yaw, root_bob_y, &mut out.scratch);
+        out.skins.resize_with(self.skins.len(), Vec::new);
+        self.skin_from_world(&out.scratch.world, &mut out.skins);
+        self.hit_bones_from_world(&out.scratch.world, &mut out.hit_bones);
+    }
 
-        for (skin_idx, skin) in self.skins.iter().enumerate() {
-            if let Some(dst) = out_skins.get_mut(skin_idx) {
-                dst.resize(MAX_SKIN_JOINTS, Mat4::IDENTITY);
-                for (j, (&joint_node, &ibm)) in skin
-                    .joints
-                    .iter()
-                    .zip(skin.inverse_bind_matrices.iter())
-                    .enumerate()
-                {
-                    if j < MAX_SKIN_JOINTS {
-                        dst[j] = world[joint_node] * ibm;
-                    }
-                }
+    fn skin_from_world(&self, world: &[Mat4], out: &mut [Vec<Mat4>]) {
+        for (skin, dst) in self.skins.iter().zip(out) {
+            dst.resize(MAX_SKIN_JOINTS, Mat4::IDENTITY);
+            for ((&joint_node, &ibm), mat) in skin.joints.iter().zip(&skin.inverse_bind_matrices).zip(dst) {
+                *mat = world[joint_node] * ibm;
             }
         }
+    }
+
+    #[cfg(test)]
+    fn evaluate_skins(&self, pose: &Pose, root_yaw: f32, root_bob_y: f32, out: &mut [Vec<Mat4>]) {
+        let mut scratch = RigScratch::default();
+        self.evaluate_world_matrices(pose, root_yaw, root_bob_y, &mut scratch);
+        self.skin_from_world(&scratch.world, out);
     }
 
     /// Computes morphed vertex buffer for a primitive given active expression weights (`name -> 0..1`).
@@ -1163,6 +1167,24 @@ mod tests {
     use super::*;
     use crate::poses::load_poses;
     use std::path::PathBuf;
+
+    #[test]
+    fn evaluating_frame_preserves_the_hit_mask_bone_buffer() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let model = VrmModel::load(&root.join("models/avatar.vrm")).unwrap();
+        let mut frame = RigFrame { hit_bones: Vec::with_capacity(64), ..RigFrame::default() };
+        let storage = frame.hit_bones.as_ptr();
+        model.evaluate_frame(&Pose::new(), 0.0, 0.0, &mut frame);
+        let head_y = frame.hit_bones.iter().find(|(name, _)| *name == "head").unwrap().1.y;
+        let mut original_skins = vec![Vec::new(); model.skins.len()];
+        model.evaluate_skins(&Pose::new(), 0.0, 0.0, &mut original_skins);
+        assert_eq!(frame.skins, original_skins);
+        model.evaluate_frame(&Pose::new(), 0.3, 0.1, &mut frame);
+        assert_eq!(frame.hit_bones.len(), 17);
+        let raised_head = frame.hit_bones.iter().find(|(name, _)| *name == "head").unwrap().1.y;
+        assert!((raised_head - head_y - 0.1).abs() < 1e-5);
+        assert_eq!(frame.hit_bones.as_ptr(), storage, "the hit-mask buffer must not be replaced each frame");
+    }
 
     #[test]
     fn loads_avatar_vrm_and_evaluates_idle_and_cheer_skins() {

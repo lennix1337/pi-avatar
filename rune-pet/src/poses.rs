@@ -237,6 +237,7 @@ pub struct BlenderInput {
     pub cursor_attention: bool,
     pub petting_intensity: f32,
     pub harness_mood: Option<HarnessMood>,
+    pub ambient_drowsiness: f32,
 }
 
 fn max_pose_angular_delta(a: &Pose, b: &Pose) -> f32 {
@@ -303,6 +304,7 @@ pub struct PoseBlender {
     eyes: [f32; 2],
     petting_intensity: f32,
     life: AnimationLife,
+    drowsiness: f32,
     total_time_sec: f32,
 }
 
@@ -351,6 +353,7 @@ impl PoseBlender {
             eyes: [0.0; 2],
             petting_intensity: 0.0,
             life: AnimationLife::default(),
+            drowsiness: 0.0,
             total_time_sec: 0.0,
         }
     }
@@ -514,15 +517,19 @@ impl PoseBlender {
         for (value, target) in self.eyes.iter_mut().zip(input.eyes) {
             *value += (target - *value) * eye_alpha;
         }
-        self.life.step(
-            dt_sec,
-            input.target_pose == "idle"
-                && !input.walking
-                && !input.cursor_attention
-                && input.harness_mood.is_none(),
-            input.harness_mood,
-            input.eyes_closed,
-        );
+        self.life.step_landing(dt_sec, input.target_pose == "land");
+        let idle = input.target_pose == "idle"
+            && !input.walking
+            && !input.cursor_attention
+            && input.harness_mood.is_none();
+        self.life.step(dt_sec, idle, input.harness_mood, input.eyes_closed);
+        let drowsiness = if idle && !input.eyes_closed && input.petting_intensity < 0.1 {
+            input.ambient_drowsiness.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let rate = if drowsiness > self.drowsiness { 3.0 } else { 7.0 };
+        self.drowsiness += (drowsiness - self.drowsiness) * (1.0 - (-dt_sec * rate).exp());
     }
 
     pub fn evaluate(&self, forced_preview: bool) -> EvaluatedPose {
@@ -631,7 +638,7 @@ impl PoseBlender {
                 [0.0; 3]
             } else {
                 match bone {
-                    "head" => [self.head_pitch, self.head_yaw, petting_roll],
+                    "head" => [self.head_pitch + self.drowsiness * 0.11, self.head_yaw, petting_roll],
                     "neck" => [self.neck_pitch, self.neck_yaw, 0.0],
                     "chest" => [0.0, self.chest_yaw, 0.0],
                     "leftEye" | "rightEye" => [self.eyes[0], self.eyes[1], 0.0],
@@ -647,6 +654,15 @@ impl PoseBlender {
         }
 
         let mut expressions = self.expr_weights.clone();
+        if !forced_preview {
+            let [brows, mood_softness] = self.life.mood_face();
+            let softness = mood_softness.max(self.drowsiness * 0.35);
+            for (name, accent) in [("angry", brows), ("relaxed", softness)] {
+                if let Some(weight) = expressions.get_mut(name) {
+                    *weight = (*weight + accent).min(1.0);
+                }
+            }
+        }
         let happy = expressions.get("happy").copied().unwrap_or(0.0);
         let happy_suppress = 1.0 - smoothstep(0.25, 0.65, happy);
         let auto_blink = if forced_preview {
@@ -662,6 +678,7 @@ impl PoseBlender {
         let blink = auto_blink
             .max(self.eyes_closed_blend)
             .max(pet_squint)
+            .max(if forced_preview { 0.0 } else { self.drowsiness * 0.22 })
             .clamp(0.0, 1.0);
         expressions.insert("blink", blink);
 
@@ -868,6 +885,82 @@ mod tests {
                 "pose '{pose_name}' secondary motion should animate smoothly (diff={max_diff})"
             );
         }
+    }
+
+    #[test]
+    fn ambient_drowsiness_softens_the_face_and_yields_to_cursor_attention() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "idle", "neutral", 0);
+        let mut input = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "idle",
+            target_expression: "neutral",
+            ambient_drowsiness: 1.0,
+            ..Default::default()
+        };
+        for _ in 0..75 {
+            blender.step(input);
+        }
+        assert!(blender.evaluate(false).expressions["relaxed"] > 0.25);
+        input.cursor_attention = true;
+        blender.step(input);
+        assert!(blender.evaluate(false).expressions["relaxed"] > 0.15);
+        for _ in 0..45 {
+            blender.step(input);
+        }
+        assert!(blender.evaluate(false).expressions["relaxed"] < 0.02);
+    }
+
+    #[test]
+    fn worried_mood_keeps_posture_and_tension_after_the_entry_beat() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "think", "sad", 0);
+        let worried = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "think",
+            target_expression: "sad",
+            harness_mood: Some(HarnessMood::Worried),
+            ..Default::default()
+        };
+        for _ in 0..240 {
+            blender.step(worried);
+        }
+        let eval = blender.evaluate(false);
+        assert!(eval.expressions["sad"] > 0.7);
+        assert!(eval.expressions["angry"] > 0.10, "sustained brow tension");
+        assert!(eval.pose["head"][2] < -0.05, "sustained head tilt");
+        let clear = BlenderInput { harness_mood: None, ..worried };
+        blender.step(clear);
+        assert!(blender.evaluate(false).expressions["angry"] > 0.10);
+        for _ in 0..60 {
+            blender.step(clear);
+        }
+        assert!(blender.evaluate(false).expressions["angry"] < 0.005);
+    }
+
+    #[test]
+    fn landing_has_a_single_upper_body_compression_and_rebound() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "fall", "neutral", 0);
+        let input = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "land",
+            target_expression: "neutral",
+            ..Default::default()
+        };
+        let mut peak = 0.0_f32;
+        let mut rebound = 0.0_f32;
+        for _ in 0..26 {
+            blender.step(input);
+            let pitch = blender.life.offset("chest")[0];
+            peak = peak.max(pitch);
+            rebound = rebound.min(pitch);
+        }
+        assert!(peak > 0.07, "landing compression: {peak}");
+        assert!(rebound < -0.015, "landing rebound: {rebound}");
+        for _ in 0..90 {
+            blender.step(input);
+            assert!(blender.life.offset("chest")[0].abs() < 0.012);
+        }
+        assert_eq!(blender.life.offset("hips"), [0.0; 3]);
+        assert_eq!(blender.life.offset("leftFoot"), [0.0; 3]);
     }
 
     #[test]
