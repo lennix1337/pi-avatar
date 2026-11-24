@@ -1,5 +1,7 @@
 //! Delightful touches: subtle cursor-tracking head gaze and interactive head-pat sparkle burst.
 
+use crate::hit_mask::ClickZone;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Sparkle {
     pub x: f32,
@@ -30,6 +32,7 @@ pub struct DelightController {
     pat_flips: u8,
     pat_window_sec: f32,
     pat_cooldown_sec: f32,
+    tap_cooldown_sec: f32,
     pet_travel_dip: f32,
     pet_idle_sec: f32,
 }
@@ -57,6 +60,8 @@ impl DelightController {
         if self.pat_cooldown_sec > 0.0 {
             self.pat_cooldown_sec = (self.pat_cooldown_sec - dt).max(0.0);
         }
+
+        self.tap_cooldown_sec = (self.tap_cooldown_sec - dt).max(0.0);
 
         // Advance floating sparkle particles
         for sp in &mut self.sparkles {
@@ -199,8 +204,20 @@ impl DelightController {
         pat_triggered
     }
 
-    pub fn trigger_click_sparkles(&mut self, origin_x: f32, origin_y: f32) {
-        self.happy_boost_sec = self.happy_boost_sec.max(1.0);
+    pub fn trigger_click_sparkles(&mut self, origin_x: f32, origin_y: f32, zone: ClickZone) {
+        if self.tap_cooldown_sec > 0.0 {
+            return;
+        }
+        self.tap_cooldown_sec = 0.18;
+        let (spread, lifetime) = match zone {
+            ClickZone::Head => (0.70, 1.05),
+            ClickZone::Body => (1.0, 1.05),
+            // Let the state machine's surprised expression show rather than overriding it.
+            ClickZone::Feet => (1.25, 0.55),
+        };
+        if zone != ClickZone::Feet {
+            self.happy_boost_sec = self.happy_boost_sec.max(1.0);
+        }
         const OFFSETS: &[(f32, f32, f32, f32, f32, bool)] = &[
             (-14.0, -6.0, -12.0, -32.0, 6.5, true),
             (0.0, -14.0, 0.0, -38.0, 7.5, false),
@@ -208,12 +225,12 @@ impl DelightController {
         ];
         for &(ox, oy, vx, vy, size, warm) in OFFSETS {
             self.sparkles.push(Sparkle {
-                x: origin_x + ox,
+                x: origin_x + ox * spread,
                 y: origin_y + oy,
-                vx,
+                vx: vx * spread,
                 vy,
                 age: 0.0,
-                lifetime: 1.05,
+                lifetime,
                 size,
                 warm,
             });
@@ -248,6 +265,32 @@ impl DelightController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consecutive_taps_do_not_stack_the_same_feedback() {
+        let mut d = DelightController::new();
+        d.trigger_click_sparkles(100.0, 100.0, ClickZone::Head);
+        let first = d.sparkles.len();
+        assert!(first > 0);
+        for _ in 0..12 {
+            d.trigger_click_sparkles(100.0, 100.0, ClickZone::Head);
+        }
+        assert_eq!(d.sparkles.len(), first, "a rapid repeat should not flood the overlay");
+        for _ in 0..12 {
+            d.update(1.0 / 60.0, None, (0.0, 0.0), false);
+        }
+        d.trigger_click_sparkles(100.0, 100.0, ClickZone::Head);
+        assert!(d.sparkles.len() > first, "a later tap gets another response");
+    }
+
+    #[test]
+    fn a_foot_tap_keeps_the_surprised_face_and_has_brief_sparkles() {
+        let mut d = DelightController::new();
+        d.trigger_click_sparkles(100.0, 100.0, ClickZone::Feet);
+        assert_eq!(d.happy_boost_sec, 0.0);
+        assert_eq!(d.sparkles.len(), 3);
+        assert!(d.sparkles.iter().all(|p| p.lifetime < 0.6));
+    }
 
     #[test]
     fn gaze_tracks_nearby_cursor_and_clamps_to_natural_angles() {

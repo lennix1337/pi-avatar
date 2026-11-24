@@ -694,11 +694,12 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
                         let zone = HIT_MASK_SLOT
                             .get()
                             .and_then(|m| m.lock().ok())
-                            .and_then(|mask| mask.hit_zone(nx, ny))
-                            .unwrap_or(ClickZone::Body);
-                        s.pet.on_click(zone);
-                        s.delight.trigger_click_sparkles(lx, (ly - 12.0).max(16.0));
-                        tx.wake_after(Duration::from_millis(16));
+                            .and_then(|mask| mask.hit_zone(nx, ny));
+                        if let Some(zone) = zone {
+                            s.pet.on_click(zone);
+                            s.delight.trigger_click_sparkles(lx, (ly - 12.0).max(16.0), zone);
+                            tx.wake_after(Duration::from_millis(16));
+                        }
                     }
                 }
             }
@@ -885,6 +886,12 @@ fn scene_mood_sleep(s: &mut PetAppState) {
     s.apply_scene_preview(m.pose, m.expression, false, 0, 0.0, Some(m));
 }
 
+fn scene_tap_feet(s: &mut PetAppState) {
+    s.apply_scene_preview("react", "surprised", false, 0, 0.0, None);
+    s.delight.trigger_click_sparkles(110.0, 226.0, ClickZone::Feet);
+    s.delight.update(0.10, None, (0.0, 0.0), false);
+}
+
 fn scene_delight_pat(s: &mut PetAppState) {
     s.apply_scene_preview("cheer", "happy", false, 0, 0.0, None);
     s.delight.trigger_pat_burst(PET_WINDOW_WIDTH * 0.5, 62.0);
@@ -946,6 +953,7 @@ fn main() {
             ("walk", scene_walk),
             ("landing", scene_landing),
             ("drowsy", scene_drowsy),
+            ("tap-feet", scene_tap_feet),
             ("arms-up", scene_arms_up),
             ("mood-worried", scene_mood_worried),
             ("mood-celebrate", scene_mood_celebrate),
