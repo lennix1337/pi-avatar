@@ -22,6 +22,20 @@ use crate::vrm::{DecodedTexture, MAX_SKIN_JOINTS, VrmModel, VrmVertex};
 
 const MSAA_SAMPLES: u32 = 4;
 
+pub const CAMERA_FOV_DEG: f32 = 32.0;
+pub const CAMERA_Y: f32 = 1.02;
+pub const CAMERA_Z: f32 = 3.85;
+
+pub fn pet_camera_view_proj(aspect: f32) -> Mat4 {
+    let proj = Mat4::perspective_rh(CAMERA_FOV_DEG.to_radians(), aspect, 0.1, 30.0);
+    let view = Mat4::look_at_rh(
+        Vec3::new(0.0, CAMERA_Y, CAMERA_Z),
+        Vec3::new(0.0, CAMERA_Y, 0.0),
+        Vec3::Y,
+    );
+    proj * view
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FrameUniforms {
@@ -537,13 +551,7 @@ impl Compositor<PetAppState> for VrmCompositor {
         self.wants_draw = f.rt.state.should_render();
 
         let aspect = (f.size.0.max(1) as f32) / (f.size.1.max(1) as f32);
-        let proj = Mat4::perspective_rh(32.0f32.to_radians(), aspect, 0.1, 30.0);
-        let view = Mat4::look_at_rh(
-            Vec3::new(0.0, 0.96, 3.85),
-            Vec3::new(0.0, 0.96, 0.0),
-            Vec3::Y,
-        );
-        let view_proj_mat = proj * view;
+        let view_proj_mat = pet_camera_view_proj(aspect);
         let view_proj = view_proj_mat.to_cols_array_2d();
 
         self.model.evaluate_skins(

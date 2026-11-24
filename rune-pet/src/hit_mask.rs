@@ -184,9 +184,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn sample_camera(aspect: f32) -> Mat4 {
-        let proj = Mat4::perspective_rh(32.0f32.to_radians(), aspect, 0.1, 30.0);
-        let view = Mat4::look_at_rh(Vec3::new(0.0, 0.96, 3.85), Vec3::new(0.0, 0.96, 0.0), Vec3::Y);
-        proj * view
+        crate::renderer::pet_camera_view_proj(aspect)
     }
 
     #[test]
