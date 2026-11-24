@@ -1,0 +1,39 @@
+[package]
+name = "rune-pet"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Native Rust VRM desktop pet built with the Rune GPU UI framework"
+
+[dependencies]
+rune = { path = ".rune-cache/crates/rune", default-features = false, features = ["embedded-fonts", "tooling"] }
+wgpu = { version = "~30.0.1", default-features = false, features = ["std", "wgsl", "dx12"] }
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Rune requires its vendored patches to be declared at the root crate.
+# Populate `.rune-cache/` once with `pwsh scripts/setup-rune.ps1`.
+[patch.crates-io]
+wgpu-hal = { path = ".rune-cache/vendor/wgpu-hal" }
+naga = { path = ".rune-cache/vendor/naga" }
+winit = { path = ".rune-cache/vendor/winit" }
+parley_engine = { path = ".rune-cache/vendor/parley_engine" }
+sctk-adwaita = { path = ".rune-cache/vendor/sctk-adwaita" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+strip = true
