@@ -79,6 +79,7 @@ pub struct PetAppState {
     cached_candidates: Vec<WindowCandidate>,
 
     forced_preview: bool,
+    preview_motion: bool,
     press_origin_px: Option<(f32, f32)>,
     press_window_pt: Option<(f32, f32)>,
     drag_active: bool,
@@ -118,6 +119,7 @@ impl PetAppState {
             last_env_poll_t: -10.0,
             cached_candidates: Vec::new(),
             forced_preview: false,
+            preview_motion: false,
             press_origin_px: None,
             press_window_pt: None,
             drag_active: false,
@@ -363,7 +365,7 @@ impl PetAppState {
     }
 
     pub fn evaluate_frame_pose(&self) -> EvaluatedPose {
-        self.blender.evaluate(self.forced_preview)
+        self.blender.evaluate(self.forced_preview && !self.preview_motion)
     }
 }
 
@@ -791,6 +793,19 @@ fn scene_walk(s: &mut PetAppState) {
     s.apply_scene_preview("idle", "neutral", true, 1, 0.25, None);
 }
 
+fn scene_landing(s: &mut PetAppState) {
+    s.apply_scene_preview("fall", "surprised", false, 0, 0.0, None);
+    s.preview_motion = true;
+    for _ in 0..8 {
+        s.blender.step(BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "land",
+            target_expression: "relaxed",
+            ..Default::default()
+        });
+    }
+}
+
 fn scene_arms_up(s: &mut PetAppState) {
     s.apply_scene_preview("cheer", "happy", false, 0, 0.0, None);
 }
@@ -879,6 +894,7 @@ fn main() {
         scenes: &[
             ("idle", scene_idle),
             ("walk", scene_walk),
+            ("landing", scene_landing),
             ("arms-up", scene_arms_up),
             ("mood-worried", scene_mood_worried),
             ("mood-celebrate", scene_mood_celebrate),

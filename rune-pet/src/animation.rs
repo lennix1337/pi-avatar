@@ -70,6 +70,8 @@ const BLINK_END: f32 = 0.205;
 pub(crate) struct AnimationLife {
     idle_age: f32,
     idle_mirrored: bool,
+    landing: bool,
+    landing_age: f32,
     mood: Option<HarnessMood>,
     mood_age: f32,
     blink_age: f32,
@@ -82,6 +84,8 @@ impl Default for AnimationLife {
         Self {
             idle_age: 0.0,
             idle_mirrored: false,
+            landing: false,
+            landing_age: 0.5,
             mood: None,
             mood_age: 0.0,
             blink_age: BLINK_END,
@@ -122,6 +126,14 @@ impl AnimationLife {
         self.accent.follow(target, 1.0 - (-dt * 13.0).exp());
     }
 
+    pub(crate) fn step_landing(&mut self, dt: f32, landing: bool) {
+        if landing && !self.landing {
+            self.landing_age = 0.0;
+        }
+        self.landing = landing;
+        self.landing_age = (self.landing_age + dt).min(0.5);
+    }
+
     pub(crate) fn blink(&self) -> f32 {
         if self.blink_age >= BLINK_END {
             return 0.0;
@@ -132,9 +144,14 @@ impl AnimationLife {
     }
 
     pub(crate) fn offset(&self, bone: &str) -> [f32; 3] {
+        let (compression, rebound) = if self.landing_age < 0.47 {
+            (gesture(self.landing_age, 0.0, 0.09, 0.16), gesture(self.landing_age, 0.19, 0.10, 0.17))
+        } else {
+            (0.0, 0.0)
+        };
         match bone {
-            "head" => self.accent.head,
-            "chest" => [self.accent.chest_pitch, 0.0, 0.0],
+            "head" => [self.accent.head[0] + 0.07 * compression - 0.052 * rebound, self.accent.head[1], self.accent.head[2]],
+            "chest" => [self.accent.chest_pitch + 0.092 * compression - 0.028 * rebound, 0.0, 0.0],
             "leftShoulder" => [0.0, 0.0, self.accent.shoulder_lift],
             "rightShoulder" => [0.0, 0.0, -self.accent.shoulder_lift],
             _ => [0.0; 3],

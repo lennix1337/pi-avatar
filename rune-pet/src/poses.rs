@@ -514,6 +514,7 @@ impl PoseBlender {
         for (value, target) in self.eyes.iter_mut().zip(input.eyes) {
             *value += (target - *value) * eye_alpha;
         }
+        self.life.step_landing(dt_sec, input.target_pose == "land");
         self.life.step(
             dt_sec,
             input.target_pose == "idle"
@@ -868,6 +869,33 @@ mod tests {
                 "pose '{pose_name}' secondary motion should animate smoothly (diff={max_diff})"
             );
         }
+    }
+
+    #[test]
+    fn landing_has_a_single_upper_body_compression_and_rebound() {
+        let mut blender = PoseBlender::new(PoseMap::new(), "fall", "neutral", 0);
+        let input = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "land",
+            target_expression: "neutral",
+            ..Default::default()
+        };
+        let mut peak = 0.0_f32;
+        let mut rebound = 0.0_f32;
+        for _ in 0..26 {
+            blender.step(input);
+            let pitch = blender.life.offset("chest")[0];
+            peak = peak.max(pitch);
+            rebound = rebound.min(pitch);
+        }
+        assert!(peak > 0.07, "landing compression: {peak}");
+        assert!(rebound < -0.015, "landing rebound: {rebound}");
+        for _ in 0..90 {
+            blender.step(input);
+            assert!(blender.life.offset("chest")[0].abs() < 0.012);
+        }
+        assert_eq!(blender.life.offset("hips"), [0.0; 3]);
+        assert_eq!(blender.life.offset("leftFoot"), [0.0; 3]);
     }
 
     #[test]
