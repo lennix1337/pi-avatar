@@ -18,7 +18,7 @@ use wgpu::util::DeviceExt;
 use crate::PetAppState;
 use crate::hit_mask::AvatarHitMask;
 use crate::pacing::{FpsSummary, FpsTracker};
-use crate::vrm::{DecodedTexture, MAX_SKIN_JOINTS, VrmModel, VrmVertex};
+use crate::vrm::{DecodedTexture, MAX_SKIN_JOINTS, RigFrame, VrmModel, VrmVertex};
 
 const MSAA_SAMPLES: u32 = 4;
 
@@ -128,7 +128,7 @@ pub struct VrmCompositor {
     vrm_path: PathBuf,
     model: VrmModel,
     gpu: Option<GpuState>,
-    skin_scratch: Vec<Vec<Mat4>>,
+    rig_frame: RigFrame,
     skin_raw_scratch: Vec<[[f32; 4]; 4]>,
     morph_scratch: Vec<VrmVertex>,
     last_morph_sig: [u32; 6],
@@ -144,12 +144,11 @@ impl VrmCompositor {
         metrics: Arc<Mutex<RenderMetrics>>,
         hit_mask: Arc<Mutex<AvatarHitMask>>,
     ) -> Self {
-        let skin_scratch = vec![vec![Mat4::IDENTITY; MAX_SKIN_JOINTS]; model.skins.len()];
         Self {
             vrm_path,
             model,
             gpu: None,
-            skin_scratch,
+            rig_frame: RigFrame::default(),
             skin_raw_scratch: vec![Mat4::IDENTITY.to_cols_array_2d(); MAX_SKIN_JOINTS],
             morph_scratch: Vec::new(),
             last_morph_sig: [u32::MAX; 6],
@@ -554,25 +553,20 @@ impl Compositor<PetAppState> for VrmCompositor {
         let view_proj_mat = pet_camera_view_proj(aspect);
         let view_proj = view_proj_mat.to_cols_array_2d();
 
-        self.model.evaluate_skins(
+        self.model.evaluate_frame(
             &pose_eval.pose,
             pose_eval.root_yaw,
             pose_eval.root_bob_y,
-            &mut self.skin_scratch,
+            &mut self.rig_frame,
         );
 
         // Publish pose-aware silhouette hit mask for per-avatar click-through & gaze head center.
-        let bone_positions = self.model.evaluate_humanoid_world_positions(
-            &pose_eval.pose,
-            pose_eval.root_yaw,
-            pose_eval.root_bob_y,
-        );
         let bubble_rect = if has_bubble {
             Some([0.08, 0.01, 0.92, 0.15])
         } else {
             None
         };
-        let mask = AvatarHitMask::from_world_bones(&bone_positions, view_proj_mat, aspect, bubble_rect);
+        let mask = AvatarHitMask::from_world_bones(&self.rig_frame.hit_bones, view_proj_mat, aspect, bubble_rect);
         if let Ok(mut guard) = self.hit_mask.lock() {
             *guard = mask;
         }
@@ -585,7 +579,7 @@ impl Compositor<PetAppState> for VrmCompositor {
         };
         f.write_buffer(&gpu.frame_uniform_buf, 0, bytemuck::bytes_of(&frame_u));
 
-        for (s_idx, skin_mats) in self.skin_scratch.iter().enumerate() {
+        for (s_idx, skin_mats) in self.rig_frame.skins.iter().enumerate() {
             if let Some(buf) = gpu.skin_buffers.get(s_idx) {
                 self.skin_raw_scratch.clear();
                 self.skin_raw_scratch
