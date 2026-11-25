@@ -1,0 +1,15 @@
+# Voice layer (companion/companion/voice). The brain worker folds these into pyproject.toml.
+numpy
+scipy
+soundfile
+sounddevice            # microphone + speaker I/O (PortAudio)
+silero-vad             # voice activity detection (onnx build, CPU)
+onnxruntime
+faster-whisper         # STT; the Canary/transcribe.cpp route needs only Node + Pi Voice's model
+nvidia-cublas-cu12     # CUDA libs for faster-whisper on Windows
+nvidia-cudnn-cu12
+# TTS (pick one, see docs/voice.md): installed in its own environment, CUDA torch from
+#   https://download.pytorch.org/whl/cu128
+kokoro>=0.9.4          # default fast voice; also needs `misaki[pt]`
+# voxcpm               # openbmb/VoxCPM2
+# pytest

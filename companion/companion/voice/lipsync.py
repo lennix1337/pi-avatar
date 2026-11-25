@@ -181,3 +181,43 @@ class VisemeAnalyzer:
 
 def viseme_track(audio: np.ndarray, sr: int, cfg: LipSyncConfig | None = None) -> list[dict[str, float]]:
     return VisemeAnalyzer(sr, cfg or LipSyncConfig()).track(audio)
+
+
+class StreamingLipSync:
+    """Same frames as `viseme_track`, computed as audio arrives in chunks (any size)."""
+
+    def __init__(self, sr: int, cfg: LipSyncConfig | None = None):
+        self.cfg = cfg or LipSyncConfig()
+        self.sr = sr
+        self._an = VisemeAnalyzer(ANALYSIS_SR, self.cfg)
+        self.frames: list[dict[str, float]] = []
+        self._win = int(ANALYSIS_SR * self.cfg.window_ms / 1000)
+        self._hop = ANALYSIS_SR / self.cfg.fps
+        self._x = np.zeros(self._win // 2, np.float32)   # leading pad: frame k is centred on k/fps
+        self._n = 0                                      # real 16 kHz samples fed so far
+        self._final = False
+
+    @property
+    def duration(self) -> float:
+        return self._n / ANALYSIS_SR
+
+    def feed(self, chunk: np.ndarray | None = None, final: bool = False) -> None:
+        if chunk is not None and len(chunk):
+            r = resample(np.asarray(chunk, dtype=np.float32), self.sr, ANALYSIS_SR)
+            self._x = np.concatenate([self._x, r])
+            self._n += r.size
+        if final and not self._final:
+            self._final = True
+            self._x = np.concatenate([self._x, np.zeros(self._win, np.float32)])
+        while True:
+            start = int(len(self.frames) * self._hop)
+            if start + self._win > self._x.size:
+                break
+            if self._final and start >= self._win // 2 + self._n:
+                break
+            self.frames.append(self._an._smooth(self._an._raw(self._x[start:start + self._win])))
+
+    def frame_at(self, t: float) -> dict[str, float]:
+        if not self.frames:
+            return zero_mouth()
+        return self.frames[min(max(0, int(t * self.cfg.fps)), len(self.frames) - 1)]

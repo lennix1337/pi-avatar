@@ -44,3 +44,25 @@ def vowels():
 def tone_burst(dur, sr=16000, f=220.0, amp=0.3):
     t = np.arange(int(dur * sr)) / sr
     return (amp * np.sin(2 * np.pi * f * t) * (1 + 0.5 * np.sin(2 * np.pi * 3 * t)) / 1.5).astype(np.float32)
+
+
+def speech(dur, sr=16000, amp=0.3, seed=0):
+    """Speech-like burst: a vowel sequence with a syllable-rate envelope."""
+    seq = list(VOWELS.values())
+    n = int(dur * sr)
+    seg = int(0.18 * sr)
+    out = np.zeros(n, np.float32)
+    for i, k in enumerate(range(0, n, seg)):
+        v = synth_vowel(seq[(i + seed) % len(seq)], dur=0.18, sr=sr, amp=amp, f0=200 + 15 * ((i + seed) % 4))
+        piece = v[: n - k]
+        env = np.hanning(len(piece)) ** 0.5
+        out[k:k + len(piece)] = piece * env
+    return out
+
+
+def noise(dur, sr=16000, amp=0.002, seed=1):
+    return (np.random.default_rng(seed).standard_normal(int(dur * sr)) * amp).astype(np.float32)
+
+
+def silence(dur, sr=16000):
+    return np.zeros(int(dur * sr), np.float32)

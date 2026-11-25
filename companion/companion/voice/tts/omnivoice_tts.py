@@ -16,7 +16,7 @@ class OmniVoiceTts(TtsBackend):
     name = "omnivoice"
     sample_rate = 24000
 
-    def __init__(self, instruct: str = "female, young, high pitch", steps: int = 16, **_):
+    def __init__(self, instruct: str = "female, young adult, high pitch", steps: int = 16, **_):
         self.instruct = instruct
         self.steps = steps
         self.model = None
