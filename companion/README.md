@@ -17,6 +17,7 @@ voz/texto ──► Companion (app.py) ──► Pi (--mode rpc, processo persis
 ```
 scripts\start-companion.cmd                  # voz real (microfone e alto-falante padrão do Windows)
 scripts\start-companion.cmd --text           # mesmo pet, conversa digitada
+scripts\start-companion.cmd --doctor         # confere pi, porta, extra de voz e microfone/caixa de som, sem abrir áudio
 scripts\start-companion.cmd --no-pet --model anthropic/claude-haiku-5-5
 ```
 
