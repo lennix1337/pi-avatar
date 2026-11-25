@@ -1,6 +1,6 @@
 """Conversa de ponta a ponta (orquestrador real + Pi real + voz de mentira) e grava o transcrito em Markdown.
 
-uv run python scripts/sample_conversation.py --model anthropic/claude-haiku-5-5 --out docs/sample-conversation.md
+uv run python scripts/sample_conversation.py --out docs/sample-conversation.md
 Linhas do roteiro que começam com '>>' interrompem a fala dela (barge-in) em vez de esperar o fim.
 """
 

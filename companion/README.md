@@ -55,3 +55,16 @@ O orquestrador conversa com a voz por `voiceapi.VoiceIO` (`listen()`, `speak(tex
 ## Medidas
 
 `uv run python scripts/bench.py --models anthropic/claude-haiku-5-5 ... --turns 13` mede, com o Pi real, o tempo do fim do texto até a primeira frase pronta. `scripts/sample_conversation.py` gera o transcrito de `docs/`.
+
+### Latência (Pi real, 13 turnos, fim do texto → primeira frase pronta)
+
+| modelo | 1º token p50 | 1ª frase p50 | p90 | máx |
+|---|---|---|---|---|
+| anthropic/claude-haiku-4-5 | 0.37 s | 0.54 s | 0.87 s | 0.93 s |
+| anthropic/claude-haiku-5-5 | 0.50 s | 0.63 s | 0.83 s | 0.96 s |
+| anthropic/claude-sonnet-5-5 | 0.96 s | 1.33 s | 2.11 s | 4.94 s |
+| anthropic/claude-sonnet-4-6 | 1.13 s | 1.73 s | 2.17 s | 2.25 s |
+
+(Numa segunda rodada anterior, sonnet-5-5 deu 0.76 s de p50; há variação de rede.) O padrão é `claude-sonnet-5-5`: no transcrito, o haiku fala em parágrafos e faz pergunta em toda fala; o sonnet responde curto e com opinião, mais humano. Quem preferir latência mínima troca para `anthropic/claude-haiku-5-5` em `companion.json` (p50 0.63 s).
+
+Conversa de exemplo: `docs/sample-conversation.md`.
