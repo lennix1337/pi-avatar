@@ -54,7 +54,10 @@ function Measure-Run {
 $streamSec = 22   # 2 s of lead-in + the 20 s script
 $runs = @(
     (Measure-Run -Label "baseline-idle" -ExtraArgs @("--no-companion", "--force-idle") -MeasureSec $streamSec),
-    (Measure-Run -Label "replay-20s" -ExtraArgs @("--companion-replay", $Replay) -MeasureSec $streamSec),
+    (Measure-Run -Label "auto-no-companion" -ExtraArgs @("--no-companion") -MeasureSec $streamSec),
+    (Measure-Run -Label "auto-companion-down" -ExtraArgs @() -MeasureSec $streamSec),
+    (Measure-Run -Label "replay-20s-a" -ExtraArgs @("--companion-replay", $Replay) -MeasureSec $streamSec),
+    (Measure-Run -Label "replay-20s-b" -ExtraArgs @("--companion-replay", $Replay) -MeasureSec $streamSec),
     (Measure-Run -Label "replay+tail" -ExtraArgs @("--companion-replay", $Replay) -MeasureSec ($streamSec + $TailSeconds))
 )
 $runs | Select-Object Run, Frames, AvgFps, MinFps, P5Fps, WsPeakMB, WsAvgMB, WsEndMB | Format-Table -AutoSize
