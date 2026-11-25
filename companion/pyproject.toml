@@ -1,0 +1,24 @@
+[project]
+name = "pi-avatar-companion"
+version = "0.1.0"
+description = "Cérebro e orquestrador do companion do Pi Avatar: conversa em pt-BR, memória, iniciativa e servidor para o pet."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+pi-companion = "companion.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["companion"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
