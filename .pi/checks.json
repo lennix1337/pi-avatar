@@ -2,9 +2,9 @@
   "version": 1,
   "checks": {
     "rune-pet-test": {
-      "description": "cargo test do rune-pet no PC (origin/main); a VM nao tem cargo",
-      "argv": ["node", "/home/ubuntu/.pi/agent/bin/pc-task.mjs", "--name", "pet-test", "--timeout", "900", "scripts/pc-test.cmd"],
-      "timeoutMs": 960000
+      "description": "cargo test do rune-pet no PC, no HEAD local (precisa estar no origin); a VM nao tem cargo",
+      "argv": ["npm", "test"],
+      "timeoutMs": 1860000
     }
   }
 }
