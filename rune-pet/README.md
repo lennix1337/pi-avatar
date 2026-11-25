@@ -39,8 +39,31 @@ A VM não tem `cargo`. `npm test` na raiz (e a receita `.pi/checks.json`) roda `
 
 # Capturas PNG headless usando o tooling nativo do Rune (--snap + --scene)
 .\target\release\pi-avatar.exe --snap docs\rune-shot-idle.png --scene idle --scale 2
-# cenas: idle, walk, landing, drowsy, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat
+# cenas: idle, walk, landing, drowsy, arms-up, mood-worried, mood-celebrate, mood-working, mood-wave, mood-sleep, delight-pat,
+#        talk-aa, talk-oh, emo-smug, emo-embarrassed, emo-excited, emo-confused, listening, thinking, subtitle-long
 ```
+
+## Companion (conversa)
+
+O pet é cliente TCP do companion (`companion/PROTOCOL.md`, linhas JSON). Por padrão conecta em
+`127.0.0.1:47800` e tenta de novo a cada 2 s; sem companion funciona como antes.
+
+```powershell
+.\target\release\pi-avatar.exe --companion 127.0.0.1:47800   # padrão
+.\target\release\pi-avatar.exe --no-companion
+.\target\release\pi-avatar.exe --companion-replay scripts\talk-20s.jsonl   # toca um fluxo gravado (t em segundos)
+
+python scripts\fake_companion.py serve          # companion falso, conversa roteirizada
+python scripts\fake_companion.py emit > x.jsonl  # gera o fluxo de replay
+pwsh scripts\measure-companion.ps1              # FPS/RAM: ocioso, sem companion, replay de 20 s e replay + cauda
+```
+
+Lábios (aa/ih/ou/ee/oh) com ataque/soltura e queda a zero em 150 ms sem `mouth`; emoções (inclusive
+smug, teasing, embarrassed, bored, excited, confused) viram mistura de expressões VRM + postura sutil;
+gestos são animações aditivas curtas; a fala sobrepõe os humores do harness e aparece como legenda
+no balão (quebra de linha, até 3 linhas visíveis, some ~1,5 s após `end`). Durante a conversa o
+pet fica parado; o loop só é acordado pelo companion quando a conversa está inativa, porque o Rune
+renderiza a cada wake e um wake por mensagem `mouth` somaria quadros ao pacer de 60 FPS.
 
 A versão release do Windows abre sem console e fica acessível pelo ícone **Pi Avatar**
 na bandeja. Clique com o botão direito no ícone e escolha **Sair** para fechar.

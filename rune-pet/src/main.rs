@@ -10,26 +10,31 @@
 //!   `pi-avatar.exe --snap docs/rune-shot-idle.png --scene idle --scale 2`
 
 mod animation;
+mod companion;
+mod conversation;
 mod delight;
 mod harness;
 mod hit_mask;
 mod pacing;
 mod pet_state;
 mod poses;
+mod protocol;
 mod renderer;
 mod vrm;
 mod win32;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use rune::tok::type_;
 use rune::{
     App, AppSpec, Color, Cx, El, Phase, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, Tx, Waker,
-    WindowHandle, WindowOptions, col, el, row, text,
+    TextStyle, WindowHandle, WindowOptions, col, el, row, text,
 };
 
+use crate::conversation::{Conversation, SubtitleView};
 use crate::delight::DelightController;
 use crate::harness::{HarnessMood, HarnessWatcher, MoodPresentation, mood_preset};
 use crate::hit_mask::{AvatarHitMask, ClickThroughController, ClickZone};
@@ -40,6 +45,7 @@ use crate::pet_state::{
 };
 pub use crate::poses::EvaluatedPose;
 use crate::poses::{BlenderInput, PoseBlender, PoseMap, load_poses};
+use crate::protocol::PokeKind;
 use crate::renderer::{RenderMetrics, VrmCompositor};
 use crate::vrm::VrmModel;
 
@@ -53,12 +59,20 @@ struct CliConfig {
     measure_secs: Option<u64>,
     stay_open_ms: Option<u64>,
     stats_file: Option<PathBuf>,
+    /// Companion address to connect to (`None` with `--no-companion`).
+    companion_addr: Option<String>,
+    /// Timestamped JSON lines to play instead of connecting (`--companion-replay`).
+    companion_replay: Option<PathBuf>,
     rune_args: Vec<String>,
 }
 
 static CLI: OnceLock<CliConfig> = OnceLock::new();
 static WINDOW_SLOT: OnceLock<Arc<Mutex<Option<WindowHandle>>>> = OnceLock::new();
 static TRAY_QUEUE: OnceLock<Arc<Mutex<Vec<TrayEvent>>>> = OnceLock::new();
+/// True while the conversation is animating (the pacer already runs every frame).
+/// Companion messages only need to wake the loop when this is false: Rune re-renders on every
+/// wake, so waking per `mouth` message would add frames on top of the paced ones.
+static CONV_ACTIVE: AtomicBool = AtomicBool::new(false);
 static RENDER_METRICS: OnceLock<Arc<Mutex<RenderMetrics>>> = OnceLock::new();
 static HIT_MASK_SLOT: OnceLock<Arc<Mutex<AvatarHitMask>>> = OnceLock::new();
 
@@ -87,6 +101,8 @@ pub struct PetAppState {
     press_window_pt: Option<(f32, f32)>,
     drag_active: bool,
     tray: Option<Tray>,
+    /// Talking/listening/thinking layer fed by the companion process.
+    conv: Conversation,
 }
 
 impl PetAppState {
@@ -102,6 +118,7 @@ impl PetAppState {
         pet.set_forced_behavior(forced);
         pet.set_prefer_sit_first(sit_first);
         let snap = pet.snapshot();
+        let conv = Conversation::new(&poses);
         let blender = PoseBlender::new(poses, snap.pose, snap.expression, snap.facing);
 
         let mut harness = HarnessWatcher::new(state_file);
@@ -130,6 +147,7 @@ impl PetAppState {
             press_window_pt: None,
             drag_active: false,
             tray: None,
+            conv,
         }
     }
 
@@ -138,6 +156,10 @@ impl PetAppState {
     }
 
     pub fn bubble_text(&self) -> Option<(&str, [u8; 3])> {
+        if self.conv.is_active() {
+            // The conversation owns the bubble (subtitles); the harness yields.
+            return None;
+        }
         if let Some(m) = self.active_mood() {
             return Some((m.bubble_text.as_str(), m.accent_rgb));
         }
@@ -145,6 +167,24 @@ impl PetAppState {
             return Some(("Zzz...", [139, 92, 246]));
         }
         None
+    }
+
+    /// Subtitle of the current utterance, if the companion is talking.
+    pub fn subtitle(&self) -> Option<SubtitleView> {
+        self.conv.subtitle_view()
+    }
+
+    /// Whether any speech bubble (subtitle or harness) is on screen.
+    pub fn has_bubble(&self) -> bool {
+        self.subtitle().is_some() || self.bubble_text().is_some()
+    }
+
+    /// Bottom edge of the bubble as a fraction of the window height, for the click-through mask.
+    pub fn bubble_bottom_frac(&self) -> f32 {
+        match self.subtitle() {
+            Some(v) => subtitle_bubble_height(v.lines.len()) / PET_WINDOW_HEIGHT,
+            None => 0.15,
+        }
     }
 
     pub fn should_render(&self) -> bool {
@@ -235,15 +275,27 @@ impl PetAppState {
             let _ = self.harness.poll();
         }
 
-        let mood_override = self
-            .harness
-            .current()
-            .map(|m| (m.mood, m.pose, m.expression, m.eyes_closed));
-        if mood_override.is_some() {
+        for msg in companion::drain() {
+            self.conv.handle(msg);
+        }
+        self.conv.step(dt_sec);
+        let talking = self.conv.is_active();
+        CONV_ACTIVE.store(talking, Ordering::Relaxed);
+        self.blender.set_conversation(self.conv.frame());
+
+        // A live conversation has priority over harness moods.
+        let mood_override = if talking {
+            None
+        } else {
+            self.harness
+                .current()
+                .map(|m| (m.mood, m.pose, m.expression, m.eyes_closed))
+        };
+        if mood_override.is_some() || talking {
             self.pet.notify_user_activity();
         }
-        let mut snap = if mood_override.is_some() && !self.drag_active {
-            // While reacting to a harness mood, stay attentive in place.
+        let mut snap = if (mood_override.is_some() || talking) && !self.drag_active {
+            // While reacting to a harness mood or talking, stay attentive in place.
             let mut s = self.pet.snapshot();
             s.walking = false;
             s.walk_speed_factor = 0.0;
@@ -258,6 +310,7 @@ impl PetAppState {
         if pat_triggered {
             self.pet.on_petting();
             snap = self.pet.snapshot();
+            companion::send_poke(PokeKind::Pat);
         }
 
         let target_pose = mood_override.map_or(snap.pose, |(_, pose, _, _)| pose);
@@ -276,7 +329,7 @@ impl PetAppState {
             dt_sec,
             target_pose,
             target_expression: target_expr,
-            walking: snap.walking && mood_override.is_none(),
+            walking: snap.walking && mood_override.is_none() && !talking,
             walk_dx_px: snap.dx_px,
             walk_speed_factor: snap.walk_speed_factor,
             scale: self.scale,
@@ -434,6 +487,8 @@ fn parse_cli() -> CliConfig {
     let mut measure_secs = None;
     let mut stay_open_ms = None;
     let mut stats_file = None;
+    let mut companion_addr = Some(companion::DEFAULT_ADDR.to_string());
+    let mut companion_replay = None;
     let mut rune_args = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -458,6 +513,17 @@ fn parse_cli() -> CliConfig {
                     stay_open_ms = v.parse::<u64>().ok();
                 }
             }
+            "--companion" => {
+                if let Some(v) = args.next() {
+                    companion_addr = Some(v);
+                }
+            }
+            "--no-companion" => companion_addr = None,
+            "--companion-replay" => {
+                if let Some(v) = args.next() {
+                    companion_replay = Some(PathBuf::from(v));
+                }
+            }
             "--stats-file" => {
                 if let Some(v) = args.next() {
                     stats_file = Some(PathBuf::from(v));
@@ -474,6 +540,8 @@ fn parse_cli() -> CliConfig {
         measure_secs,
         stay_open_ms,
         stats_file,
+        companion_addr,
+        companion_replay,
         rune_args,
     }
 }
@@ -533,6 +601,24 @@ fn setup(s: &mut PetAppState, waker: Waker) {
         tray_waker();
     }) {
         s.tray = Some(tray);
+    }
+
+    let companion_waker: Waker = {
+        let waker = waker.clone();
+        Arc::new(move || {
+            if !CONV_ACTIVE.load(Ordering::Relaxed) {
+                waker();
+            }
+        })
+    };
+    if let Some(cli) = CLI.get() {
+        if let Some(path) = &cli.companion_replay {
+            if let Err(e) = companion::start_replay(path, companion_waker) {
+                eprintln!("companion replay: {e}");
+            }
+        } else if let Some(addr) = &cli.companion_addr {
+            companion::start(addr.clone(), companion_waker);
+        }
     }
 
     let measure_secs = CLI.get().and_then(|c| c.measure_secs);
@@ -614,6 +700,63 @@ fn poll(s: &mut PetAppState, t: f64, tx: &mut Tx) -> bool {
     }
 }
 
+const SUBTITLE_ACCENT: [u8; 3] = [139, 92, 246];
+const SUBTITLE_STYLE: TextStyle = TextStyle::new(conversation::SUBTITLE_FONT_PT, 500.0);
+const SUBTITLE_LINE_PT: f32 = conversation::SUBTITLE_FONT_PT * 1.25;
+const SUBTITLE_PAD_Y: f32 = 6.0;
+const SUBTITLE_TOP_PAD: f32 = 4.0;
+const SUBTITLE_TAIL_PT: f32 = 5.0;
+const SUBTITLE_TAIL_GAP: f32 = 2.0;
+
+/// Height in points of the subtitle bubble (pad + lines + tail), for the click-through mask.
+fn subtitle_bubble_height(lines: usize) -> f32 {
+    SUBTITLE_TOP_PAD
+        + 2.0 * SUBTITLE_PAD_Y
+        + lines as f32 * SUBTITLE_LINE_PT
+        + SUBTITLE_TAIL_GAP
+        + SUBTITLE_TAIL_PT
+}
+
+/// Word-wrapped subtitle pill with its tail; the whole thing fades with `view.opacity`.
+fn subtitle_bubble(view: &SubtitleView) -> El {
+    let ink = Color { r: 0.09, g: 0.11, b: 0.15, a: 1.0 };
+    let paper = Color { r: 0.99, g: 0.99, b: 1.0, a: 0.96 };
+    let mut lines = col().key("subtitle-lines").items_center();
+    for (i, line) in view.lines.iter().enumerate() {
+        let mut shown = line.clone();
+        if i == 0 && view.more_above {
+            shown.insert(0, '…');
+        }
+        lines = lines.child(text(shown).key(format!("subtitle-line-{i}")).font(SUBTITLE_STYLE).color(ink));
+    }
+    let pill = row()
+        .key("subtitle-pill")
+        .center()
+        .px(10.0)
+        .py(SUBTITLE_PAD_Y)
+        .max_w(PET_WINDOW_WIDTH - 20.0)
+        .radius(12.0)
+        .fill(paper)
+        .border(1.2, rgb_u8(SUBTITLE_ACCENT, 0.75))
+        .shadow(2.0, 8.0, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.16 })
+        .child(lines);
+    let tail = el()
+        .key("subtitle-tail")
+        .size(8.0, SUBTITLE_TAIL_PT)
+        .radius(2.5)
+        .fill(paper)
+        .border(1.0, rgb_u8(SUBTITLE_ACCENT, 0.6));
+    col()
+        .key("subtitle-wrap")
+        .w_full()
+        .items_center()
+        .pt(SUBTITLE_TOP_PAD)
+        .gap(SUBTITLE_TAIL_GAP)
+        .opacity(view.opacity)
+        .child(pill)
+        .child(tail)
+}
+
 fn rgb_u8(c: [u8; 3], a: f32) -> Color {
     Color {
         r: c[0] as f32 / 255.0,
@@ -652,6 +795,7 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
                         if (px - ox).hypot(py - oy) >= thresh {
                             s.drag_active = true;
                             s.pet.start_drag(ox, oy);
+                            companion::send_poke(PokeKind::Drag);
                         }
                     }
                     if s.drag_active {
@@ -686,6 +830,7 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
                         s.cached_candidates = cands.clone();
                         s.pet.sync_window_candidates(&cands);
                         s.pet.end_drag_with_candidates(&cands);
+                        companion::send_poke(PokeKind::Drop);
                         tx.wake_after(Duration::from_millis(16));
                     } else if !d.cancelled() && d.clicks == 1 {
                         let (lx, ly) = press_pt.unwrap_or((wx, wy));
@@ -708,12 +853,16 @@ fn view(s: &PetAppState, _cx: &mut Cx<PetAppState>) -> El {
         })
         .on_double_press_tx(|s: &mut PetAppState, tx| {
             s.pet.on_double_click();
+            companion::send_poke(PokeKind::Double);
             s.delight.trigger_pat_burst(PET_WINDOW_WIDTH * 0.5, 62.0);
             tx.wake_after(Duration::from_millis(16));
         });
 
-    // Harness mood speech bubble rendered natively by Rune's SDF + Parley engine above the head.
-    if let Some((msg, accent)) = s.bubble_text() {
+    // Live subtitles of the companion, then (only when it is silent) the harness mood bubble,
+    // both rendered natively by Rune's SDF + Parley engine above the head.
+    if let Some(sub) = s.subtitle() {
+        root = root.child(subtitle_bubble(&sub));
+    } else if let Some((msg, accent)) = s.bubble_text() {
         let dot = el()
             .key("bubble-dot")
             .size(7.0, 7.0)
@@ -886,6 +1035,98 @@ fn scene_mood_sleep(s: &mut PetAppState) {
     s.apply_scene_preview(m.pose, m.expression, false, 0, 0.0, Some(m));
 }
 
+/// Plays protocol lines into the conversation and steps the rig, so the snapshot shows the
+/// settled look. `mouth` is re-sent every frame because a live companion streams it.
+fn conversation_scene(s: &mut PetAppState, lines: &[&str], mouth: Option<&str>, frames: usize) {
+    s.apply_scene_preview("idle", "neutral", false, 0, 0.0, None);
+    s.preview_motion = true;
+    let parse = |l: &str| protocol::parse_line(l).expect("scene line parses");
+    for l in lines {
+        s.conv.handle(parse(l));
+    }
+    let mouth = mouth.map(parse);
+    for _ in 0..frames {
+        if let Some(m) = &mouth {
+            s.conv.handle(m.clone());
+        }
+        s.conv.step(1.0 / 60.0);
+        s.blender.set_conversation(s.conv.frame());
+        s.blender.step(BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "idle",
+            target_expression: "neutral",
+            ..Default::default()
+        });
+    }
+}
+
+const SCENE_SAY: &str = r#"{"t":"say","id":"s1","text":"Oi! Eu sou a Pi, e agora consigo falar com você."}"#;
+const SCENE_SPEAKING: &str = r#"{"t":"state","speaking":true}"#;
+
+fn scene_talk_aa(s: &mut PetAppState) {
+    conversation_scene(s, &[SCENE_SPEAKING, SCENE_SAY], Some(r#"{"t":"mouth","aa":0.9}"#), 90);
+}
+
+fn scene_talk_oh(s: &mut PetAppState) {
+    conversation_scene(s, &[SCENE_SPEAKING, SCENE_SAY], Some(r#"{"t":"mouth","oh":0.85,"ou":0.2}"#), 90);
+}
+
+fn scene_emo_smug(s: &mut PetAppState) {
+    conversation_scene(
+        s,
+        &[r#"{"t":"say","id":"s2","text":"Eu avisei que ia dar certo.","emotion":"smug"}"#],
+        None,
+        120,
+    );
+}
+
+fn scene_emo_embarrassed(s: &mut PetAppState) {
+    conversation_scene(
+        s,
+        &[r#"{"t":"say","id":"s3","text":"Ah... não precisa elogiar tanto.","emotion":"embarrassed"}"#],
+        None,
+        120,
+    );
+}
+
+fn scene_emo_excited(s: &mut PetAppState) {
+    conversation_scene(
+        s,
+        &[r#"{"t":"say","id":"s4","text":"Funcionou! Funcionou de primeira!","emotion":"excited"}"#],
+        Some(r#"{"t":"mouth","ee":0.6,"aa":0.3}"#),
+        90,
+    );
+}
+
+fn scene_emo_confused(s: &mut PetAppState) {
+    conversation_scene(
+        s,
+        &[r#"{"t":"say","id":"s5","text":"Hm? Não entendi essa parte.","emotion":"confused"}"#],
+        None,
+        120,
+    );
+}
+
+fn scene_listening(s: &mut PetAppState) {
+    conversation_scene(s, &[r#"{"t":"state","listening":true}"#], None, 90);
+}
+
+fn scene_thinking(s: &mut PetAppState) {
+    conversation_scene(s, &[r#"{"t":"state","thinking":true}"#], None, 90);
+}
+
+fn scene_subtitle_long(s: &mut PetAppState) {
+    conversation_scene(
+        s,
+        &[
+            SCENE_SPEAKING,
+            r#"{"t":"say","id":"s6","text":"Essa é uma fala bem comprida para testar a legenda: ela quebra em várias linhas, rola conforme eu vou falando e some sozinha logo depois que eu termino de falar.","emotion":"relaxed"}"#,
+        ],
+        Some(r#"{"t":"mouth","ih":0.5,"aa":0.4}"#),
+        400,
+    );
+}
+
 fn scene_tap_feet(s: &mut PetAppState) {
     s.apply_scene_preview("react", "surprised", false, 0, 0.0, None);
     s.delight.trigger_click_sparkles(110.0, 226.0, ClickZone::Feet);
@@ -961,6 +1202,15 @@ fn main() {
             ("mood-wave", scene_mood_wave),
             ("mood-sleep", scene_mood_sleep),
             ("delight-pat", scene_delight_pat),
+            ("talk-aa", scene_talk_aa),
+            ("talk-oh", scene_talk_oh),
+            ("emo-smug", scene_emo_smug),
+            ("emo-embarrassed", scene_emo_embarrassed),
+            ("emo-excited", scene_emo_excited),
+            ("emo-confused", scene_emo_confused),
+            ("listening", scene_listening),
+            ("thinking", scene_thinking),
+            ("subtitle-long", scene_subtitle_long),
         ],
         setup: Some(setup),
         poll: Some(poll),
