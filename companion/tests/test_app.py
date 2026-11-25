@@ -37,11 +37,11 @@ class SlowVoice(FakeVoice):
 
     async def speak(self, text, emotion, on_mouth):
         self.spoken.append((text, emotion))
-        self._speaking = asyncio.current_task()
+        self._speaking.add(asyncio.current_task())
         try:
             await asyncio.sleep(self.dur)
         finally:
-            self._speaking = None
+            self._speaking.discard(asyncio.current_task())
 
     def cancel(self):
         self.cancelled += 1
@@ -223,3 +223,71 @@ class _FakeServer:
 
     def send(self, msg):
         self.sink.send(msg)
+
+
+class PipeVoice(FakeVoice):
+    """Voz que toca uma frase por vez (como a real) e mede quantas estão na fila ao mesmo tempo."""
+
+    def __init__(self, dur=0.15):
+        super().__init__(realtime=False)
+        self.dur, self.inflight, self.peak, self.events = dur, 0, 0, []
+        self.gate = asyncio.Lock()
+
+    async def speak(self, text, emotion, on_mouth):
+        self.inflight += 1
+        self.peak = max(self.peak, self.inflight)
+        self.events.append(("submit", text))
+        try:
+            async with self.gate:
+                self.events.append(("start", text))
+                await asyncio.sleep(self.dur)
+                self.events.append(("end", text))
+        finally:
+            self.inflight -= 1
+
+
+async def test_next_sentence_is_queued_while_the_previous_plays_but_shown_when_it_starts(tmp_path):
+    llm = FakeLLM(["Primeira frase. Segunda frase. Terceira frase. Quarta frase."])
+    comp, llm, voice, sink, mem = build(tmp_path, llm=llm, voice=PipeVoice(0.15))
+    seen = {}
+    orig_end = voice.speak
+
+    async def spy(text, emotion, on_mouth):
+        await orig_end(text, emotion, on_mouth)
+        seen[text] = [m["text"] for m in sink.of("say")]    # legendas já enviadas quando esta frase acabou
+
+    voice.speak = spy
+    await say(comp, "conta")
+    kinds = [(k, t) for k, t in voice.events]
+    assert kinds.index(("submit", "Segunda frase.")) < kinds.index(("end", "Primeira frase."))   # síntese adiantada, sem buraco entre frases
+    assert voice.peak == 2                                                  # mas só uma frase de folga
+    assert seen["Primeira frase."] == ["Primeira frase."]                                          # legenda da segunda só quando ela começa a soar
+    assert [m["text"] for m in sink.of("say")] == ["Primeira frase.", "Segunda frase.", "Terceira frase.", "Quarta frase."]
+    assert sink.of("end") == [{"t": "end", "id": sink.of("say")[-1]["id"]}]
+    assert mem.data.recent[-1].text == "Primeira frase. Segunda frase. Terceira frase. Quarta frase." and not mem.data.recent[-1].interrupted
+
+
+async def test_barge_in_with_a_sentence_queued_keeps_only_what_was_audible(tmp_path):
+    llm = FakeLLM(["Primeira frase longa. Segunda frase. Terceira frase."])
+    comp, llm, voice, sink, mem = build(tmp_path, llm=llm, voice=PipeVoice(0.3))
+    await comp.on_utterance(Utterance("conta"))
+    for _ in range(100):
+        if ("start", "Primeira frase longa.") in voice.events:
+            break
+        await asyncio.sleep(0.01)
+    comp.on_user_speech_start()
+    await settle(comp)
+    assert [m["text"] for m in sink.of("say")] == ["Primeira frase longa."]
+    saved = [m for m in mem.data.recent if m.role == "companion"]
+    assert saved and saved[0].interrupted and "Segunda" not in saved[0].text
+    assert voice.inflight == 0
+
+
+async def test_a_failing_voice_does_not_kill_the_turn(tmp_path):
+    class Broken(PipeVoice):
+        async def speak(self, text, emotion, on_mouth):
+            raise RuntimeError("tts caiu")
+
+    comp, llm, voice, sink, mem = build(tmp_path, voice=Broken())
+    await say(comp, "oi")
+    assert sink.of("state")[-1]["speaking"] is False

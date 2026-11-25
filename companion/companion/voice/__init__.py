@@ -13,10 +13,10 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 
 import numpy as np
 
+from ..voiceapi import MouthFn, Utterance, VoiceIO
 from . import config as _config
 from .audio import FRAME, MIC_SR, rms
 from .echo import EchoConfig, EchoGate
@@ -29,20 +29,15 @@ from .tts import TtsBackend
 from .tts import create as create_tts
 from .vad import Segment, Segmenter, SegmenterConfig, create_vad
 
-__all__ = ["Utterance", "Voice"]
+__all__ = ["Utterance", "Voice", "create_voice"]
 
 log = logging.getLogger("companion.voice")
 
 
-@dataclass
-class Utterance:
-    text: str
-    started_at: float   # time.time() when the user started talking
-    ended_at: float     # time.time() when the user stopped
+class Voice(VoiceIO):
+    """The real voice. `Utterance.started_at/ended_at` are time.time() of the user's speech."""
 
-
-class Voice:
-    def __init__(self, config: dict, on_speech_start: Callable[[], None] | None = None, *,
+    def __init__(self, config: dict | None = None, on_speech_start: Callable[[], None] | None = None, *,
                  mic: Mic | None = None, tts: TtsBackend | None = None, stt: SttBackend | None = None,
                  sink: BufferedSink | None = None, vad=None):
         self.cfg = _config.merge(config)
@@ -84,7 +79,7 @@ class Voice:
                 self._speaker = Speaker(self._tts, self._sink, LipSyncConfig(fps=lip["fps"], gain=lip["gain"]))
             return self._speaker
 
-    async def speak(self, text: str, emotion: str, on_mouth: Callable[[dict], None]) -> None:
+    async def speak(self, text: str, emotion: str, on_mouth: MouthFn) -> None:
         """Play one sentence; returns when it has been heard. Queue several calls to pipeline them."""
         sp = await self._ensure_speaker()
         await sp.speak(text, emotion, on_mouth)
@@ -119,6 +114,9 @@ class Voice:
                 self._stt = create_stt(self.cfg["stt"])
                 await asyncio.get_running_loop().run_in_executor(self._pool, self._stt.load)
             return self._stt
+
+    async def start(self) -> None:
+        await self.warmup()
 
     async def warmup(self) -> None:
         """Load the models now instead of at first use."""
@@ -223,3 +221,8 @@ class Voice:
                 b.close()
         self._pool.shutdown(wait=False, cancel_futures=True)
         await self._out.put(None)
+
+
+def create_voice(config: dict | None = None, on_speech_start: Callable[[], None] | None = None) -> Voice:
+    """The real voice with the caller's config merged over the defaults (`start()` loads its models)."""
+    return Voice(config, on_speech_start=on_speech_start)
