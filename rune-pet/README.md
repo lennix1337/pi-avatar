@@ -23,6 +23,10 @@ cargo test
 cargo build --release
 ```
 
+### Testes a partir da VM Linux
+
+A VM não tem `cargo`. `npm test` na raiz (e a receita `.pi/checks.json`) roda `scripts/pc-test.cmd` no PC por `pc-task`: faz fast-forward de `origin/main` lá e executa `cargo test --quiet` em `rune-pet`. A saída completa fica em `~/.pi/agent/pc-task-logs/pet-test-*.log`; confira a linha `test result:` no log, não só o código de saída do comando.
+
 ## Execução e capturas headless
 
 ```powershell
