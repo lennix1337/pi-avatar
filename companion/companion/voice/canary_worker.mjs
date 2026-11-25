@@ -1,14 +1,17 @@
 // Sidecar that keeps Pi Voice's transcribe.cpp model (Canary 1B v2, GGUF) loaded and answers
 // one request per frame on stdin:  [uint32 LE n][n float32 LE samples @16 kHz]  ->  one JSON line.
 // argv: <node_modules dir holding transcribe-cpp> <model.gguf> <language> [backend]
-import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 
 const [modulesDir, modelPath, language = "pt", backend = "auto"] = process.argv.slice(2);
-const require = createRequire(path.join(modulesDir, "noop.js"));
-const entry = require.resolve("transcribe-cpp");
-const { TranscribeModel } = await import(pathToFileURL(entry).href);
+// The package is ESM-only (no "require" export condition), so resolve its entry by hand.
+const pkgDir = path.join(modulesDir, "transcribe-cpp");
+const pkg = JSON.parse(readFileSync(path.join(pkgDir, "package.json"), "utf8"));
+let root = pkg.exports?.["."] ?? pkg.main;
+while (root && typeof root === "object") root = root.import ?? root.default ?? Object.values(root)[0];
+const { TranscribeModel } = await import(pathToFileURL(path.join(pkgDir, root ?? "index.js")).href);
 
 const model = await TranscribeModel.load(modelPath, backend === "auto" ? {} : { backend });
 const say = (o) => process.stdout.write(JSON.stringify(o) + "\n");
