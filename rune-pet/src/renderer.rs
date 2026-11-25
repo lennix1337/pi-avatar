@@ -131,7 +131,7 @@ pub struct VrmCompositor {
     rig_frame: RigFrame,
     skin_raw_scratch: Vec<[[f32; 4]; 4]>,
     morph_scratch: Vec<VrmVertex>,
-    last_morph_sig: [u32; 6],
+    last_morph_sig: [u32; MORPH_NAMES.len()],
     wants_draw: bool,
     metrics: Arc<Mutex<RenderMetrics>>,
     hit_mask: Arc<Mutex<AvatarHitMask>>,
@@ -151,7 +151,7 @@ impl VrmCompositor {
             rig_frame: RigFrame::default(),
             skin_raw_scratch: vec![Mat4::IDENTITY.to_cols_array_2d(); MAX_SKIN_JOINTS],
             morph_scratch: Vec::new(),
-            last_morph_sig: [u32::MAX; 6],
+            last_morph_sig: [u32::MAX; MORPH_NAMES.len()],
             wants_draw: true,
             metrics,
             hit_mask,
@@ -535,9 +535,14 @@ impl VrmCompositor {
             material_bind_groups,
             meshes: gpu_meshes,
         });
-        self.last_morph_sig = [u32::MAX; 6];
+        self.last_morph_sig = [u32::MAX; MORPH_NAMES.len()];
     }
 }
+
+/// Expressions whose weights reshape the face mesh: emotions, blink and lip-sync visemes.
+const MORPH_NAMES: [&str; 11] = [
+    "happy", "angry", "sad", "relaxed", "surprised", "blink", "aa", "ih", "ou", "ee", "oh",
+];
 
 impl Compositor<PetAppState> for VrmCompositor {
     fn render(&mut self, f: &mut Frame<'_, PetAppState>) {
@@ -546,7 +551,7 @@ impl Compositor<PetAppState> for VrmCompositor {
         self.ensure_gpu(f.device, f.queue, key, f.format, f.size);
 
         let pose_eval = f.rt.state.evaluate_frame_pose();
-        let has_bubble = f.rt.state.bubble_text().is_some();
+        let has_bubble = f.rt.state.has_bubble();
         self.wants_draw = f.rt.state.should_render();
 
         let aspect = (f.size.0.max(1) as f32) / (f.size.1.max(1) as f32);
@@ -562,7 +567,7 @@ impl Compositor<PetAppState> for VrmCompositor {
 
         // Publish pose-aware silhouette hit mask for per-avatar click-through & gaze head center.
         let bubble_rect = if has_bubble {
-            Some([0.08, 0.01, 0.92, 0.15])
+            Some([0.08, 0.01, 0.92, f.rt.state.bubble_bottom_frac()])
         } else {
             None
         };
@@ -589,8 +594,8 @@ impl Compositor<PetAppState> for VrmCompositor {
         }
 
         // Update morphed face vertices only when expression or blink weights actually changed.
-        let expr_names = ["happy", "angry", "sad", "relaxed", "surprised", "blink"];
-        let mut morph_sig = [0u32; 6];
+        let expr_names = MORPH_NAMES;
+        let mut morph_sig = [0u32; MORPH_NAMES.len()];
         for (i, name) in expr_names.iter().enumerate() {
             let w = pose_eval.expressions.get(*name).copied().unwrap_or(0.0);
             morph_sig[i] = (w.clamp(0.0, 1.0) * 1000.0).round() as u32;

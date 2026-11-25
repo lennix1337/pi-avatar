@@ -6,6 +6,7 @@ use std::f32::consts::{PI, TAU};
 use std::path::Path;
 
 use crate::animation::AnimationLife;
+use crate::conversation::{CONV_BONES, ConvFrame, mouth_attenuation};
 use crate::harness::HarnessMood;
 use crate::pet_state::{compute_walk_phase_delta, facing_to_yaw_rad};
 
@@ -14,6 +15,8 @@ pub type PoseMap = BTreeMap<String, Pose>;
 
 pub const HIP_SWING_RAD: f32 = 0.30;
 pub const EXPRESSION_NAMES: [&str; 5] = ["happy", "angry", "sad", "relaxed", "surprised"];
+/// VRM mouth presets driven by lip sync, in the order of `ConvFrame::mouth`.
+pub const VISEME_NAMES: [&str; 5] = ["aa", "ih", "ou", "ee", "oh"];
 
 pub struct EvaluatedPose {
     pub pose: Pose,
@@ -306,6 +309,7 @@ pub struct PoseBlender {
     life: AnimationLife,
     drowsiness: f32,
     total_time_sec: f32,
+    conv: ConvFrame,
 }
 
 impl PoseBlender {
@@ -355,7 +359,14 @@ impl PoseBlender {
             life: AnimationLife::default(),
             drowsiness: 0.0,
             total_time_sec: 0.0,
+            conv: ConvFrame::default(),
         }
+    }
+
+    /// Conversation layer for the next evaluation: additive bone offsets, expression weights,
+    /// an eyelid floor and lip-sync weights. The default frame changes nothing.
+    pub fn set_conversation(&mut self, frame: ConvFrame) {
+        self.conv = frame;
     }
 
     pub fn set_pose_target(&mut self, name: &'static str, duration_ms: f32) {
@@ -613,6 +624,15 @@ impl PoseBlender {
             bone_names.insert(b);
         }
 
+        let conv = if forced_preview { ConvFrame::default() } else { self.conv };
+        if conv.active {
+            for (i, bone) in CONV_BONES.iter().enumerate() {
+                if conv.offsets.0[i].iter().any(|x| x.abs() > 1e-5) {
+                    bone_names.insert(bone);
+                }
+            }
+        }
+
         if !forced_preview {
             if self.eyes.iter().any(|x| x.abs() > 1e-4) {
                 bone_names.extend(["leftEye", "rightEye"]);
@@ -646,9 +666,11 @@ impl PoseBlender {
                 }
             };
             let accent = if forced_preview { [0.0; 3] } else { self.life.offset(bone) };
+            let talk = if conv.active { conv.offsets.get(bone) } else { [0.0; 3] };
             let rotation = std::array::from_fn(|axis| {
                 base[axis] + add[axis] * breath_weight + sec[axis] * sec_weight
                     + walk[axis] + gaze[axis] + accent[axis] * sec_weight
+                    + talk[axis] * sec_weight
             });
             combined.insert(bone.to_string(), rotation);
         }
@@ -661,6 +683,18 @@ impl PoseBlender {
                 if let Some(weight) = expressions.get_mut(name) {
                     *weight = (*weight + accent).min(1.0);
                 }
+            }
+        }
+        if conv.active {
+            for (name, add) in EXPRESSION_NAMES.iter().zip(conv.expr) {
+                if let Some(weight) = expressions.get_mut(*name) {
+                    *weight = (*weight + add).min(1.0);
+                }
+            }
+            let w = |name: &str| expressions.get(name).copied().unwrap_or(0.0);
+            let keep = mouth_attenuation(w("happy"), w("sad"), w("surprised"));
+            for (name, v) in VISEME_NAMES.iter().zip(conv.mouth) {
+                expressions.insert(*name, (v * keep).clamp(0.0, 1.0));
             }
         }
         let happy = expressions.get("happy").copied().unwrap_or(0.0);
@@ -679,6 +713,7 @@ impl PoseBlender {
             .max(self.eyes_closed_blend)
             .max(pet_squint)
             .max(if forced_preview { 0.0 } else { self.drowsiness * 0.22 })
+            .max(conv.lids)
             .clamp(0.0, 1.0);
         expressions.insert("blink", blink);
 
@@ -885,6 +920,49 @@ mod tests {
                 "pose '{pose_name}' secondary motion should animate smoothly (diff={max_diff})"
             );
         }
+    }
+
+    fn conv_frame() -> ConvFrame {
+        let mut f = ConvFrame { active: true, mouth: [0.8, 0.0, 0.0, 0.0, 0.2], lids: 0.3, ..Default::default() };
+        f.offsets.0[4] = [0.2, 0.0, 0.0];
+        f.expr = [0.0, 0.0, 0.0, 0.4, 0.0];
+        f
+    }
+
+    fn talking_blender() -> PoseBlender {
+        PoseBlender::new(PoseMap::new(), "idle", "neutral", 0)
+    }
+
+    #[test]
+    fn conversation_frame_reaches_mouth_bones_and_lids() {
+        let mut b = talking_blender();
+        let base = b.evaluate(false);
+        assert!(!base.expressions.contains_key("aa"), "no lip sync without a conversation");
+        b.set_conversation(conv_frame());
+        let e = b.evaluate(false);
+        assert!((e.expressions["aa"] - 0.8).abs() < 1e-5);
+        assert!((e.expressions["oh"] - 0.2).abs() < 1e-5);
+        assert!(e.expressions["relaxed"] >= 0.4);
+        assert!(e.expressions["blink"] >= 0.3, "lid floor");
+        assert!((e.pose["head"][0] - base.pose["head"][0] - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn inactive_conversation_frames_are_ignored() {
+        let mut b = talking_blender();
+        let base = b.evaluate(false);
+        b.set_conversation(ConvFrame { active: false, ..conv_frame() });
+        let e = b.evaluate(false);
+        assert_eq!(e.pose["head"], base.pose["head"]);
+        assert!(!e.expressions.contains_key("aa"));
+    }
+
+    #[test]
+    fn a_big_smile_keeps_most_of_the_mouth_shape() {
+        let mut b = PoseBlender::new(PoseMap::new(), "idle", "happy", 0);
+        b.set_conversation(conv_frame());
+        let aa = b.evaluate(false).expressions["aa"];
+        assert!(aa >= 0.8 * 0.6 && aa < 0.8, "{aa}");
     }
 
     #[test]

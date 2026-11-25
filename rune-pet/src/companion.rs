@@ -299,7 +299,8 @@ mod tests {
         assert_eq!(ev.len(), 3);
         assert_eq!(ev[0].0, 0.5);
         assert!(matches!(ev[0].1, Incoming::State { speaking: true, .. }));
-        assert_eq!((ev[1].0, ev[2].0), (2.5, 2.5), "an `at`-less line follows the previous one");
+        assert_eq!((ev[1].0, ev[2].0), (0.5, 2.5), "an `at`-less line follows the previous one");
+        assert!(matches!(ev[1].1, Incoming::Gesture(_)));
     }
 
     #[test]
