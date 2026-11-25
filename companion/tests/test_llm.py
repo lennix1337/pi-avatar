@@ -33,7 +33,7 @@ async def test_streams_text_deltas_and_reuses_the_process(tmp_path):
 async def test_cli_args_have_no_tools_no_extensions_and_a_persona_file(tmp_path):
     llm = make(tmp_path)
     argv = llm.argv()
-    for flag in ("--no-tools", "--no-extensions", "--no-session", "--mode", "rpc", "--thinking", "off"):
+    for flag in ("--no-tools", "--system-prompt", "--no-extensions", "--no-session", "--mode", "rpc", "--thinking", "off"):
         assert flag in argv
     assert (tmp_path / "w" / "persona.md").read_text() == "persona"
 

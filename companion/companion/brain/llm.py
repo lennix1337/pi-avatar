@@ -66,8 +66,7 @@ class PiRpcLLM(LLM):
         args = [*base, "--mode", "rpc", "--no-session", "--no-tools", "--no-extensions", "--no-skills",
                 "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-mcp", "--offline",
                 "--model", self.model, "--thinking", self.thinking,
-                "--system-prompt", "Você é a voz de uma companheira virtual. Siga as instruções abaixo.",
-                "--append-system-prompt", str(prompt_file)]
+                "--system-prompt", str(prompt_file)]
         return args
 
     async def start(self) -> None:
