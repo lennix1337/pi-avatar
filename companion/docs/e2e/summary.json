@@ -1,0 +1,25 @@
+{
+ "pet_messages": {
+  "state": 32,
+  "say": 22,
+  "mouth": 2275,
+  "gesture": 5,
+  "end": 6
+ },
+ "mouth_frames_open": 1608,
+ "peak_pet_clients": 2,
+ "barge_in": {
+  "user_voice_to_speech_confirmed_s": 0.344,
+  "user_voice_to_audio_cut_s": 0.344
+ },
+ "boot_s": 1.0,
+ "reply_wavs": [
+  "reply-turn-1.wav",
+  "reply-turn-2.wav",
+  "reply-turn-3.wav",
+  "reply-turn-4.wav",
+  "reply-turn-5.wav",
+  "reply-turn-6.wav",
+  "reply-turn-7.wav"
+ ]
+}

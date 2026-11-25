@@ -51,6 +51,8 @@ class Companion:
         self._turn: asyncio.Task | None = None
         self._said: list[str] = []
         self._partial: str = ""
+        self._chain: list[asyncio.Task] = []
+        self._last_id: str | None = None
         self._emotion = "neutral"
         self._state = (False, False, False)
         self._ids = 0
@@ -279,10 +281,10 @@ class Companion:
     async def _run_turn(self, kind: str, prompt: str, user_text: str | None, trigger: Trigger | None) -> None:
         t0 = self.clock()
         self._said, self._partial = [], ""
+        self._chain, self._last_id = [], None
         self._set_state(listening=False, thinking=True, speaking=False)
         queue: asyncio.Queue = asyncio.Queue()
         gen: asyncio.Task | None = None
-        last_id: str | None = None
         cancelled = False
         failed = False
         try:
@@ -304,21 +306,23 @@ class Companion:
                     failed = True
                     log.warning("LLM falhou: %s", value)
                     if not self._said:
-                        last_id = await self._say_segment(parse_segment(self.rng.choice(FAILURES)))
+                        await self._say_segment(parse_segment(self.rng.choice(FAILURES)))
                     break
                 if first_at is None:
                     first_at = self.clock()
                     self.turn_log.append({"kind": kind, "first_sentence_s": first_at - t0})
-                last_id = await self._say_segment(value)
+                await self._say_segment(value)
+            await asyncio.gather(*self._chain)
         except asyncio.CancelledError:
             cancelled = True
         finally:
-            if gen is not None:
-                gen.cancel()
-                await asyncio.gather(gen, return_exceptions=True)
+            pending = [t for t in (gen, *self._chain) if t is not None]
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
             if cancelled:
                 self.voice.cancel()
-            self._finish_turn(kind, user_text, trigger, last_id, cancelled, failed)
+            self._finish_turn(kind, user_text, trigger, self._last_id, cancelled, failed)
 
     async def _generate(self, prompt: str, queue: asyncio.Queue) -> None:
         chunker = SentenceChunker()
@@ -335,31 +339,65 @@ class Companion:
             queue.put_nowait(("error", str(exc)))
 
     async def _say_filler(self) -> None:
+        """Enche o silêncio sem segurar a fila: a primeira frase real vai para a voz enquanto o filler ainda toca."""
         choices = [f for f in FILLERS if f != self._last_filler]
         self._last_filler = text = self.rng.choice(choices)
-        sid = self._next_id()
-        self._send(protocol.say(sid, text, "neutral"))
-        self._set_state(thinking=False, speaking=True)
-        await self.voice.speak(text, "neutral", self._on_mouth)
-        self._set_state(thinking=True, speaking=False)
+        speak = asyncio.ensure_future(self.voice.speak(text, "neutral", self._on_mouth))
+        prev = self._chain[-1] if self._chain else None
+        self._chain.append(asyncio.create_task(self._present_filler(prev, text, speak)))
 
-    async def _say_segment(self, seg: Segment) -> str | None:
+    async def _present_filler(self, prev: asyncio.Task | None, text: str, speak: asyncio.Future) -> None:
+        try:
+            if prev is not None:
+                await prev
+            self._send(protocol.say(self._next_id(), text, "neutral"))
+            self._set_state(thinking=False, speaking=True)
+            await speak
+            self._set_state(thinking=True, speaking=False)
+        except asyncio.CancelledError:
+            speak.cancel()
+            raise
+        except Exception:
+            log.exception("o filler falhou")
+
+    async def _say_segment(self, seg: Segment) -> None:
+        """Agenda a fala da frase: a síntese da próxima começa enquanto a anterior toca (no máximo uma na fila)."""
+        if len(self._chain) >= 2:
+            await self._chain[-2]
         emotion = seg.emotion or self._emotion
         self._emotion = emotion
-        for g in seg.gestures:
-            self._send(protocol.gesture(g))
-        if not seg.text:
-            if seg.emotion:
-                self._send(protocol.emotion(seg.emotion, 0.8))
-            return None
-        sid = self._next_id()
-        self._send(protocol.say(sid, seg.text, emotion))
-        self._set_state(thinking=False, speaking=True)
-        self._partial = seg.text
-        await self.voice.speak(seg.text, emotion, self._on_mouth)
-        self._said.append(seg.text)
-        self._partial = ""
-        return sid
+        speak = None
+        if seg.text:
+            speak = asyncio.ensure_future(self.voice.speak(seg.text, emotion, self._on_mouth))
+        prev = self._chain[-1] if self._chain else None
+        self._chain.append(asyncio.create_task(self._present(prev, seg, emotion, speak)))
+
+    async def _present(self, prev: asyncio.Task | None, seg: Segment, emotion: str, speak: asyncio.Future | None) -> None:
+        """Mostra a frase (gestos, legenda, estado) quando a anterior termina, que é quando ela começa a soar."""
+        try:
+            if prev is not None:
+                await prev
+            for g in seg.gestures:
+                self._send(protocol.gesture(g))
+            if speak is None:
+                if seg.emotion:
+                    self._send(protocol.emotion(seg.emotion, 0.8))
+                return
+            sid = self._next_id()
+            self._send(protocol.say(sid, seg.text, emotion))
+            self._set_state(thinking=False, speaking=True)
+            self._partial = seg.text
+            await speak
+            self._said.append(seg.text)
+            self._partial = ""
+            self._last_id = sid
+        except asyncio.CancelledError:
+            if speak is not None:
+                speak.cancel()
+            raise
+        except Exception:
+            log.exception("a fala falhou: %r", seg.text[:40])
+            self._partial = ""
 
     def _finish_turn(self, kind: str, user_text: str | None, trigger: Trigger | None, last_id: str | None,
                      cancelled: bool, failed: bool) -> None:

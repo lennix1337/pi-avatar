@@ -57,7 +57,7 @@ Modos em `echo.mode`: `auto` (padrão), `mute` (surda enquanto fala; com fone de
 
 Canary precisa do modelo `canary-1b-v2-Q8_0.gguf` no cache do Hugging Face e do `transcribe-cpp` em
 `~/.pi/agent/npm/node_modules` (onde o Pi Voice o instala); outros caminhos: `COMPANION_CANARY_MODEL` e
-`COMPANION_TRANSCRIBE_MODULES`. Dependências Python em `companion/voice-requirements.txt`.
+`COMPANION_TRANSCRIBE_MODULES`. Dependências Python: extra `voice` do `pyproject.toml` (`uv sync --extra voice`).
 
 ## Identidade da voz e licenças
 

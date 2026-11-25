@@ -50,6 +50,8 @@ class Config:
     reset_session_after: int = 60   # turnos até recomeçar a sessão do Pi com memória fresca
     filler_after_s: float = 1.2     # LLM mais lento que isso → "hmm", "peraí"
     llm_timeout_s: float = 40.0
+    text_mode: bool = False         # true = conversa digitada (como --text), sem microfone nem áudio
+    voice: dict = field(default_factory=dict)   # sobrepõe os padrões de companion/voice/config.py (tts, stt, listen, output...)
     initiative: InitiativeConfig = field(default_factory=InitiativeConfig)
 
     @property

@@ -43,14 +43,15 @@ def make_llms(cfg: Config, fake: bool) -> tuple[LLM, LLM | None]:
     return chat, summarizer
 
 
-def make_voice(args: argparse.Namespace) -> VoiceIO:
-    if args.text:
-        return FakeVoice(realtime=not args.instant)
+def create_voice(cfg: Config, text: bool = False, instant: bool = False) -> VoiceIO:
+    """A voz real (padrão); o modo digitado (FakeVoice) com --text ou `"text_mode": true` no companion.json."""
+    if text or cfg.text_mode:
+        return FakeVoice(realtime=not instant)
     try:
         module = importlib.import_module("companion.voice")
     except ImportError as exc:
-        sys.exit(f"Voz real indisponível ({exc}). Use --text para conversar digitando.")
-    return module.create_voice()
+        sys.exit(f"Voz real indisponível ({exc}). Instale o extra: uv sync --extra voice (ou use --text).")
+    return module.create_voice(cfg.voice)
 
 
 async def _stdin_loop(voice: FakeVoice, name: str) -> None:
@@ -78,7 +79,7 @@ async def amain(args: argparse.Namespace) -> None:
         cfg.initiative.enabled = False
     llm, summarizer = make_llms(cfg, args.fake_llm)
     memory = Memory(cfg.memory_dir / "default.json", cfg.history_window, cfg.summarize_after)
-    voice = make_voice(args)
+    voice = create_voice(cfg, args.text, args.instant)
     server = PetServer(cfg.host, cfg.port)
     harness = Path(args.state_file) if args.state_file else None
     companion = Companion(cfg, llm, voice, server, memory, summarizer, harness)
