@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "checks": {
+    "rune-pet-test": {
+      "description": "cargo test do rune-pet no PC, no HEAD local (precisa estar no origin); a VM nao tem cargo",
+      "argv": ["npm", "test"],
+      "timeoutMs": 1860000
+    }
+  }
+}
