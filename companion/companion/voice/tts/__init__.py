@@ -19,8 +19,6 @@ def create(name: str, **options) -> TtsBackend:
         from .omnivoice_tts import OmniVoiceTts as cls
     elif name == "qwen3":
         from .qwen3_tts import Qwen3Tts as cls
-    elif name == "chatterbox":
-        from .chatterbox_tts import ChatterboxTts as cls
     elif name == "fake":
         from .fake import FakeTts as cls
     else:
