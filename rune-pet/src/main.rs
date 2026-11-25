@@ -24,6 +24,7 @@ mod vrm;
 mod win32;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -68,6 +69,10 @@ struct CliConfig {
 static CLI: OnceLock<CliConfig> = OnceLock::new();
 static WINDOW_SLOT: OnceLock<Arc<Mutex<Option<WindowHandle>>>> = OnceLock::new();
 static TRAY_QUEUE: OnceLock<Arc<Mutex<Vec<TrayEvent>>>> = OnceLock::new();
+/// True while the conversation is animating (the pacer already runs every frame).
+/// Companion messages only need to wake the loop when this is false: Rune re-renders on every
+/// wake, so waking per `mouth` message would add frames on top of the paced ones.
+static CONV_ACTIVE: AtomicBool = AtomicBool::new(false);
 static RENDER_METRICS: OnceLock<Arc<Mutex<RenderMetrics>>> = OnceLock::new();
 static HIT_MASK_SLOT: OnceLock<Arc<Mutex<AvatarHitMask>>> = OnceLock::new();
 
@@ -275,6 +280,7 @@ impl PetAppState {
         }
         self.conv.step(dt_sec);
         let talking = self.conv.is_active();
+        CONV_ACTIVE.store(talking, Ordering::Relaxed);
         self.blender.set_conversation(self.conv.frame());
 
         // A live conversation has priority over harness moods.
@@ -597,13 +603,21 @@ fn setup(s: &mut PetAppState, waker: Waker) {
         s.tray = Some(tray);
     }
 
+    let companion_waker: Waker = {
+        let waker = waker.clone();
+        Arc::new(move || {
+            if !CONV_ACTIVE.load(Ordering::Relaxed) {
+                waker();
+            }
+        })
+    };
     if let Some(cli) = CLI.get() {
         if let Some(path) = &cli.companion_replay {
-            if let Err(e) = companion::start_replay(path, waker.clone()) {
+            if let Err(e) = companion::start_replay(path, companion_waker) {
                 eprintln!("companion replay: {e}");
             }
         } else if let Some(addr) = &cli.companion_addr {
-            companion::start(addr.clone(), waker.clone());
+            companion::start(addr.clone(), companion_waker);
         }
     }
 
