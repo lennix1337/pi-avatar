@@ -57,6 +57,9 @@ async def main() -> None:
         def __init__(self):
             self.say: list[dict] = []
 
+        async def close(self):
+            return None
+
         def send(self, msg):
             if msg["t"] == "say":
                 self.say.append(msg)
