@@ -10,12 +10,15 @@
 //!   `pi-avatar.exe --snap docs/rune-shot-idle.png --scene idle --scale 2`
 
 mod animation;
+mod companion;
+mod conversation;
 mod delight;
 mod harness;
 mod hit_mask;
 mod pacing;
 mod pet_state;
 mod poses;
+mod protocol;
 mod renderer;
 mod vrm;
 mod win32;
