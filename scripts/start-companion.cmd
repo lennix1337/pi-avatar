@@ -1,6 +1,6 @@
 @echo off
 rem Sobe a companheira: o pet (rune-pet) e o companion (cerebro Pi + voz real). Ctrl+C encerra os dois.
-rem Uso: scripts\start-companion.cmd [--text] [--model anthropic/claude-haiku-5-5] [--no-pet] [...flags do companion]
+rem Uso: scripts\start-companion.cmd [--text] [--model anthropic/claude-haiku-5-5] [--no-pet] [--doctor: so confere o ambiente, sem abrir o pet] [...flags do companion]
 rem Sem microfone/voz instalada: --text conversa pelo teclado. Primeira vez: baixa as dependencias (uv) e compila o pet.
 setlocal
 set "ROOT=%~dp0.."
@@ -11,6 +11,7 @@ set "WANT_PET=1"
 :args
 if "%~1"=="" goto run
 if /i "%~1"=="--no-pet" (set "WANT_PET=") else (set ARGS=%ARGS% %1)
+if /i "%~1"=="--doctor" set "WANT_PET="
 shift
 goto args
 
