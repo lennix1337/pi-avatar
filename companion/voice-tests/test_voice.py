@@ -176,3 +176,17 @@ def test_tts_sentence_to_wav_to_listen_returns_the_same_words(tmp_path):
     ref, hyp = words(text), words(utts[0].text)
     hits = sum(1 for w in ref if w in hyp)
     assert hits / len(ref) >= 0.8, (utts[0].text, text)
+
+
+def test_canary_files_are_discovered_in_the_standard_places(tmp_path):
+    from companion.voice.stt import find_canary_model, find_node_modules
+
+    assert find_canary_model(tmp_path) == "" and find_node_modules(tmp_path) == ""
+    model = tmp_path / ".cache/huggingface/hub/models--handy-computer--canary-1b-v2-gguf/snapshots/abc/canary-1b-v2-Q8_0.gguf"
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"x")
+    pkg = tmp_path / ".pi/agent/npm/node_modules/transcribe-cpp"
+    pkg.mkdir(parents=True)
+    (pkg / "package.json").write_text("{}")
+    assert find_canary_model(tmp_path) == str(model)
+    assert find_node_modules(tmp_path) == str(pkg.parent)

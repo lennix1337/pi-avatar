@@ -5,9 +5,9 @@ from __future__ import annotations
 import copy
 
 DEFAULTS: dict = {
-    "tts": {"backend": "voxcpm", "options": {}},
+    "tts": {"backend": "supertonic", "options": {}},
     "stt": {
-        "backend": "faster-whisper",   # or "canary" (Pi Voice's transcribe-cpp model through Node)
+        "backend": "auto",             # "canary" (Pi Voice's model via Node) when present, else "faster-whisper"
         "language": "pt",
         "model": "large-v3-turbo",
         "device": "cuda",

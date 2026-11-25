@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import struct
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -77,6 +78,24 @@ class FasterWhisperStt(SttBackend):
         return " ".join(s.text.strip() for s in segs).strip()
 
 
+def find_canary_model(home: Path | None = None) -> str:
+    """Pi Voice's model in the Hugging Face cache, if it is there."""
+    hub = (home or Path.home()) / ".cache" / "huggingface" / "hub" / "models--handy-computer--canary-1b-v2-gguf"
+    found = sorted(hub.glob("snapshots/*/canary-1b-v2-Q8_0.gguf"))
+    return str(found[-1]) if found else ""
+
+
+def find_node_modules(home: Path | None = None) -> str:
+    """The node_modules folder where Pi installed `transcribe-cpp`, if it did."""
+    d = (home or Path.home()) / ".pi" / "agent" / "npm" / "node_modules"
+    return str(d) if (d / "transcribe-cpp" / "package.json").is_file() else ""
+
+
+def canary_available() -> bool:
+    return bool(shutil.which("node") and (os.environ.get("COMPANION_CANARY_MODEL") or find_canary_model())
+                and (os.environ.get("COMPANION_TRANSCRIBE_MODULES") or find_node_modules()))
+
+
 class CanaryStt(SttBackend):
     """Pi Voice's STT: Canary 1B v2 (Q8_0 GGUF) on transcribe.cpp, driven through a Node sidecar."""
 
@@ -84,9 +103,9 @@ class CanaryStt(SttBackend):
 
     def __init__(self, model_path: str = "", node: str = "node", node_modules: str = "",
                  language: str = "pt", backend: str = "auto", **_):
-        self.model_path = model_path or os.environ.get("COMPANION_CANARY_MODEL", "")
+        self.model_path = model_path or os.environ.get("COMPANION_CANARY_MODEL", "") or find_canary_model()
         self.node = node
-        self.node_modules = node_modules or os.environ.get("COMPANION_TRANSCRIBE_MODULES", "")
+        self.node_modules = node_modules or os.environ.get("COMPANION_TRANSCRIBE_MODULES", "") or find_node_modules()
         self.language = language
         self.backend = backend
         self.proc: subprocess.Popen | None = None
@@ -131,7 +150,9 @@ class CanaryStt(SttBackend):
 
 
 def create_stt(cfg: dict) -> SttBackend:
-    name = cfg.get("backend", "faster-whisper")
+    name = cfg.get("backend", "auto")
+    if name == "auto":   # Pi Voice's model when this machine has it (faster and more accurate), else Whisper
+        name = "canary" if canary_available() else "faster-whisper"
     common = {k: cfg[k] for k in ("language",) if k in cfg}
     if name == "faster-whisper":
         return FasterWhisperStt(**{**common, **{k: cfg[k] for k in ("model", "device", "compute_type", "beam_size") if k in cfg}})
