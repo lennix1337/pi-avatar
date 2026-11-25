@@ -1,0 +1,7 @@
+{
+  "name": "pi-avatar",
+  "private": true,
+  "scripts": {
+    "test": "PET_SHA=$(git rev-parse HEAD) node \"$HOME/.pi/agent/bin/pc-task.mjs\" --name pet-test --timeout 1800 --env PET_SHA scripts/pc-test.cmd"
+  }
+}
