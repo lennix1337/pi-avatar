@@ -55,8 +55,11 @@ class InjectMic(Mic):
 
     def push(self, audio: np.ndarray) -> dict:
         x = np.concatenate([audio.astype(np.float32), np.zeros((-audio.size) % FRAME, np.float32)])
-        mark: dict = {"start": None, "end": None}
-        self._pending.append((deque(x.reshape(-1, FRAME)), mark))
+        blocks = x.reshape(-1, FRAME)
+        level = np.sqrt(np.mean(np.square(blocks), axis=1))
+        voiced = np.flatnonzero(level > 0.1 * level.max())   # o TTS deixa silêncio antes e depois da voz
+        mark: dict = {"start": None, "end": None, "first": int(voiced[0]), "last": int(voiced[-1])}
+        self._pending.append((deque(blocks), mark))
         return mark
 
     async def frames(self):
@@ -69,13 +72,17 @@ class InjectMic(Mic):
             await asyncio.sleep(max(0.0, start + k * FRAME_S - time.monotonic()))
             if cur is None and self._pending:
                 cur = self._pending.popleft()
-                cur[1]["start"] = time.perf_counter() - FRAME_S
+                cur[1]["i"] = 0
             if cur is None:
                 yield silence
                 continue
-            frame = cur[0].popleft()
+            frame, mark = cur[0].popleft(), cur[1]
+            if mark["i"] == mark["first"]:
+                mark["start"] = time.perf_counter() - FRAME_S    # primeiro quadro com voz
+            if mark["i"] == mark["last"]:
+                mark["end"] = time.perf_counter()                 # último quadro com voz
+            mark["i"] += 1
             if not cur[0]:
-                cur[1]["end"] = time.perf_counter()
                 cur = None
             yield frame
 
@@ -275,6 +282,7 @@ def report(out: Path, args, turns, voice: Probe, sink, pet_frames, boot_s, memor
             "speech_end_to_first_audio_s": fa_any - mark["end"] if fa_any else None,
             "first_audio_to_mouth_s": first["t_mouth"] - fa_first if first and first["t_mouth"] and fa_first else None,
             "total_s": done - mark["end"] if done else None,
+            "reply_audio_s": sum(c.size for c in sink.chunks.get(n, [])) / sink.sample_rate,
             "filler": [c["text"] for c in calls if c["filler"]],
             "sentences": [c["text"] for c in real],
         })
@@ -302,17 +310,17 @@ def report(out: Path, args, turns, voice: Probe, sink, pet_frames, boot_s, memor
                   f"- Ele começou a falar → áudio dela cortado: {bi['user_voice_to_audio_cut_s']} s", ""]
     (out / "transcript.md").write_text("\n".join(lines), encoding="utf-8")
 
-    tab = ["| Turno | Fim da fala → texto | (só o STT) | Texto → 1ª frase do LLM | 1ª frase → 1º áudio | Fim da fala → 1º áudio | Total (fim da fala → fim do áudio) |",
-           "|---|---|---|---|---|---|---|"]
+    tab = ["| Turno | Fim da fala → texto | (só o STT) | Texto → 1ª frase do LLM | 1ª frase → 1º áudio | Fim da fala → 1º áudio | Total (fim da fala → fim do áudio) | Áudio da resposta |",
+           "|---|---|---|---|---|---|---|---|"]
     for r in rows:
         tab.append(f"| {r['turn']} ({r['kind']}) | {f(r['speech_end_to_text_s'])} s | {f(r['stt_s'], 3)} s | {f(r['text_to_first_sentence_s'])} s | "
-                   f"{f(r['first_sentence_to_first_audio_s'])} s | {f(r['speech_end_to_first_audio_s'])} s | {f(r['total_s'])} s |")
+                   f"{f(r['first_sentence_to_first_audio_s'])} s | {f(r['speech_end_to_first_audio_s'])} s | {f(r['total_s'])} s | {f(r['reply_audio_s'], 1)} s |")
     normal = [r for r in rows if r["kind"] == "normal"]
     med = {k: statistics.median(v) for k in ("speech_end_to_text_s", "text_to_first_sentence_s", "first_sentence_to_first_audio_s",
                                              "speech_end_to_first_audio_s", "total_s")
            if (v := [r[k] for r in normal if r[k] is not None])}
     tab.append(f"| **mediana (turnos normais)** | {f(med.get('speech_end_to_text_s'))} s | | {f(med.get('text_to_first_sentence_s'))} s | "
-               f"{f(med.get('first_sentence_to_first_audio_s'))} s | {f(med.get('speech_end_to_first_audio_s'))} s | {f(med.get('total_s'))} s |")
+               f"{f(med.get('first_sentence_to_first_audio_s'))} s | {f(med.get('speech_end_to_first_audio_s'))} s | {f(med.get('total_s'))} s | |")
     (out / "latency.md").write_text("\n".join(tab) + "\n", encoding="utf-8")
 
     for turn, chunks in sink.chunks.items():
