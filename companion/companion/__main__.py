@@ -31,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-initiative", action="store_true", help="não fala sozinha")
     p.add_argument("--fake-llm", action="store_true", help="respostas de mentira, sem chamar o Pi")
     p.add_argument("--instant", action="store_true", help="a fala digitada não demora (sem tempo de voz simulado)")
+    p.add_argument("--doctor", action="store_true", help="confere pi, porta, extra de voz e dispositivos de áudio e sai")
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -91,8 +92,23 @@ async def amain(args: argparse.Namespace) -> None:
             reader.cancel()
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    from .doctor import render, run_checks
+
+    cfg = load_config(args.config if args.config else (Path(args.profile_dir) / "companion.json" if args.profile_dir else None))
+    if args.port is not None:
+        cfg.port = args.port
+    if args.text:
+        cfg.text_mode = True
+    checks = run_checks(cfg)
+    print(render(checks))
+    return 0 if all(c.ok for c in checks) else 1
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    if args.doctor:
+        sys.exit(_doctor(args))
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, format="%(asctime)s %(name)s %(message)s")
     try:
         asyncio.run(amain(args))
