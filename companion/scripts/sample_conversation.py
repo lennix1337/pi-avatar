@@ -110,8 +110,9 @@ async def main() -> None:
     header = (f"# Conversa de exemplo\n\nModelo: `{args.model}`. Orquestrador real, Pi real, voz simulada; "
               f"{len(firsts)} turnos. Tempo do fim do texto até a primeira frase pronta: p50 {firsts[len(firsts) // 2]:.2f}s, "
               f"máx {firsts[-1]:.2f}s.\n\nMemória extraída ao final (fatos): {memory.data.facts}\n\n---\n\n")
-    Path(args.out).write_text(header + "\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(header + "\n".join(lines), encoding="utf-8")
     print(header)
 
 
