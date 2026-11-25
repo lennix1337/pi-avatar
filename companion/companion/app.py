@@ -339,13 +339,26 @@ class Companion:
             queue.put_nowait(("error", str(exc)))
 
     async def _say_filler(self) -> None:
+        """Enche o silêncio sem segurar a fila: a primeira frase real vai para a voz enquanto o filler ainda toca."""
         choices = [f for f in FILLERS if f != self._last_filler]
         self._last_filler = text = self.rng.choice(choices)
-        sid = self._next_id()
-        self._send(protocol.say(sid, text, "neutral"))
-        self._set_state(thinking=False, speaking=True)
-        await self.voice.speak(text, "neutral", self._on_mouth)
-        self._set_state(thinking=True, speaking=False)
+        speak = asyncio.ensure_future(self.voice.speak(text, "neutral", self._on_mouth))
+        prev = self._chain[-1] if self._chain else None
+        self._chain.append(asyncio.create_task(self._present_filler(prev, text, speak)))
+
+    async def _present_filler(self, prev: asyncio.Task | None, text: str, speak: asyncio.Future) -> None:
+        try:
+            if prev is not None:
+                await prev
+            self._send(protocol.say(self._next_id(), text, "neutral"))
+            self._set_state(thinking=False, speaking=True)
+            await speak
+            self._set_state(thinking=True, speaking=False)
+        except asyncio.CancelledError:
+            speak.cancel()
+            raise
+        except Exception:
+            log.exception("o filler falhou")
 
     async def _say_segment(self, seg: Segment) -> None:
         """Agenda a fala da frase: a síntese da próxima começa enquanto a anterior toca (no máximo uma na fila)."""

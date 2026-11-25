@@ -291,3 +291,18 @@ async def test_a_failing_voice_does_not_kill_the_turn(tmp_path):
     comp, llm, voice, sink, mem = build(tmp_path, voice=Broken())
     await say(comp, "oi")
     assert sink.of("state")[-1]["speaking"] is False
+
+
+async def test_the_filler_does_not_hold_back_the_first_real_sentence(tmp_path):
+    """O primeiro token chega logo depois do filler: a frase real vai para a voz enquanto o filler ainda toca."""
+    voice = PipeVoice(0.4)
+    llm = FakeLLM(["Primeira frase inteira. Segunda frase inteira."], first_delay=0.15)
+    comp, llm, voice, sink, mem = build(tmp_path, llm=llm, voice=voice, filler_after_s=0.05)
+    await say(comp, "oi")
+    texts = [t for k, t in voice.events if k == "submit"]
+    filler = texts[0]
+    assert filler.endswith("...") and texts[1] == "Primeira frase inteira."
+    events = voice.events
+    assert events.index(("submit", "Primeira frase inteira.")) < events.index(("end", filler))
+    assert [m["text"] for m in sink.of("say")] == [filler, "Primeira frase inteira.", "Segunda frase inteira."]
+    assert sink.of("end")[-1]["id"] == sink.of("say")[-1]["id"]
