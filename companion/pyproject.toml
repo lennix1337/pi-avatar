@@ -18,7 +18,7 @@ voice = [
     "silero-vad",             # detecção de voz (build ONNX, CPU)
     "onnxruntime",
     "faster-whisper",         # STT reserva; o Canary usa só Node + o modelo do Pi Voice
-    "nvidia-cublas-cu12; sys_platform == 'win32'",
+    "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32'",   # 12.9.3 saiu sem wheel para Windows
     "nvidia-cudnn-cu12; sys_platform == 'win32'",
     "supertonic",             # TTS padrão (ONNX, CPU)
 ]

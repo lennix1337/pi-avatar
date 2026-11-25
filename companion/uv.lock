@@ -647,10 +647,13 @@ wheels = [
 
 [[package]]
 name = "nvidia-cublas-cu12"
-version = "12.9.3.13"
+version = "12.9.2.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nvidia-cuda-nvrtc-cu12" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl", hash = "sha256:623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661", size = 553162896, upload-time = "2026-04-08T18:53:10.035Z" },
 ]
 
 [[package]]
@@ -885,7 +888,7 @@ dev = [
 requires-dist = [
     { name = "faster-whisper", marker = "extra == 'voice'" },
     { name = "numpy", marker = "extra == 'voice'" },
-    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'win32' and extra == 'voice'" },
+    { name = "nvidia-cublas-cu12", marker = "sys_platform == 'win32' and extra == 'voice'", specifier = "==12.9.2.10" },
     { name = "nvidia-cudnn-cu12", marker = "sys_platform == 'win32' and extra == 'voice'" },
     { name = "onnxruntime", marker = "extra == 'voice'" },
     { name = "scipy", marker = "extra == 'voice'" },
