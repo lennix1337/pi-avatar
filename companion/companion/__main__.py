@@ -96,7 +96,7 @@ def _doctor(args: argparse.Namespace) -> int:
     from .doctor import render, run_checks
 
     cfg = load_config(args.config if args.config else (Path(args.profile_dir) / "companion.json" if args.profile_dir else None))
-    if args.port:
+    if args.port is not None:
         cfg.port = args.port
     if args.text:
         cfg.text_mode = True
