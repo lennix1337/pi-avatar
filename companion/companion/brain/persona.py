@@ -35,7 +35,7 @@ def seed_block(memory: Memory, cfg: Config, now_line: str) -> str:
     head = f"[contexto: sessão nova. Agora: {now_line}.]"
     if block:
         return f"{head}\n[memória, só para você; não recite]\n{block}\n[fim da memória]"
-    return f"{head}\n[memória vazia: vocês ainda não se conhecem direito]"
+    return f"{head}\n[memória vazia: ainda não há histórico; não se apresente, ele já sabe quem você é]"
 
 
 def user_turn(text: str, context: list[str]) -> str:
