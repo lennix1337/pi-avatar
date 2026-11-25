@@ -1,0 +1,19 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  companion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: companion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: cérebro
+        run: uv run --quiet pytest -q tests
+      - name: voz (só lógica, sem modelos)
+        run: uv run --quiet --with numpy --with scipy --with soundfile pytest -q voice-tests
