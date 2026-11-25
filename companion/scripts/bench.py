@@ -16,10 +16,10 @@ from companion.brain.llm import LLMError, PiRpcLLM
 from companion.config import Config
 
 PROMPTS = [
-    "oi", "tô com sono hoje", "qual a capital da Austrália?", "você acha que pizza com ketchup é crime?",
-    "acabei de terminar um trabalho enorme", "me conta uma coisa aleatória", "kkkk você é muito chata",
-    "tava pensando em aprender violão", "o que você faz quando eu fecho o notebook?", "tô meio ansioso com a reunião de amanhã",
-    "você prefere café ou chá?", "hoje foi um dia longo", "me dá uma opinião sincera sobre segunda-feira",
+    "e aí, tudo bem?", "acordei meio cansado hoje", "qual o maior rio do mundo?", "sorvete de passas deveria ser proibido",
+    "terminei aquela entrega que eu te falei", "inventa um apelido pra minha cadeira", "haha você é muito dramática",
+    "to pensando em adotar um cachorro", "o que você acha de acordar às cinco da manhã?", "tô com medo de errar na apresentação de sexta",
+    "time de futebol é religião?", "cheguei em casa agora, que dia", "me conta um segredo seu",
 ]
 
 
