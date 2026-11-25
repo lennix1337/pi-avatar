@@ -132,7 +132,16 @@ impl VisemeSmoother {
     }
 
     pub fn step(&mut self, dt: f32) {
-        todo!("attack/release smoothing with stale decay")
+        self.since_update += dt;
+        let stale = self.since_update > MOUTH_STALE_SEC;
+        for (cur, goal) in self.current.iter_mut().zip(self.target) {
+            let goal = if stale { 0.0 } else { goal };
+            let tau = if goal > *cur { ATTACK_TAU } else { RELEASE_TAU };
+            *cur += (goal - *cur) * (1.0 - (-dt / tau).exp());
+            if *cur < 0.001 {
+                *cur = 0.0;
+            }
+        }
     }
 
     pub fn current(&self) -> [f32; 5] {
@@ -148,7 +157,7 @@ impl VisemeSmoother {
 /// and `surprised` as "blend" mouth overrides, which would shut the mouth at full weight; a
 /// talking face keeps at least 60% of the shape so lip sync stays readable.
 pub fn mouth_attenuation(happy: f32, sad: f32, surprised: f32) -> f32 {
-    todo!("{happy} {sad} {surprised}")
+    1.0 - 0.38 * happy.max(sad).max(surprised).clamp(0.0, 1.0)
 }
 
 // ------------------------------------------------------------------------------ emotions
@@ -191,8 +200,29 @@ impl EmotionProfile {
 
 /// Emotion name → blend of VRM expressions plus subtle posture.
 pub fn emotion_profile(kind: EmotionKind) -> EmotionProfile {
-    let _ = kind;
-    todo!("emotion table")
+    use EmotionKind::*;
+    // expr: happy, angry, sad, relaxed, surprised. head: pitch (+ down), yaw, roll.
+    let p = |expr: [f32; 5], lids: f32, head: [f32; 3], chest_pitch: f32, shoulder_lift: f32| EmotionProfile {
+        expr,
+        lids,
+        head,
+        chest_pitch,
+        shoulder_lift,
+    };
+    match kind {
+        Neutral => EmotionProfile::default(),
+        Happy => p([0.85, 0.0, 0.0, 0.0, 0.0], 0.0, [-0.03, 0.0, 0.04], -0.01, 0.02),
+        Angry => p([0.0, 0.80, 0.0, 0.0, 0.0], 0.05, [0.05, 0.0, 0.0], 0.02, 0.03),
+        Sad => p([0.0, 0.0, 0.85, 0.0, 0.0], 0.10, [0.10, 0.0, 0.03], 0.04, -0.02),
+        Relaxed => p([0.0, 0.0, 0.0, 0.85, 0.0], 0.12, [0.0, 0.0, 0.04], -0.01, -0.01),
+        Surprised => p([0.0, 0.0, 0.0, 0.0, 0.85], 0.0, [-0.06, 0.0, 0.0], -0.03, 0.04),
+        Smug => p([0.35, 0.0, 0.0, 0.45, 0.0], 0.22, [-0.08, 0.10, 0.05], -0.02, 0.0),
+        Teasing => p([0.60, 0.0, 0.0, 0.10, 0.0], 0.08, [-0.02, 0.06, 0.15], 0.0, 0.02),
+        Embarrassed => p([0.30, 0.0, 0.30, 0.0, 0.10], 0.05, [0.12, -0.14, 0.08], 0.03, 0.06),
+        Bored => p([0.0, 0.0, 0.10, 0.55, 0.0], 0.30, [0.06, 0.0, 0.06], 0.03, -0.02),
+        Excited => p([0.85, 0.0, 0.0, 0.0, 0.25], 0.0, [-0.05, 0.0, 0.0], -0.02, 0.06),
+        Confused => p([0.0, 0.22, 0.10, 0.0, 0.22], 0.0, [0.0, 0.06, 0.16], 0.0, 0.01),
+    }
 }
 
 // --------------------------------------------------------------------------- subtitles
@@ -230,8 +260,36 @@ fn text_width_pt(s: &str) -> f32 {
 /// line is broken between characters. Never loses or reorders a character other than the
 /// whitespace used as break points.
 pub fn wrap_text(text: &str, max_width_pt: f32) -> Vec<String> {
-    let _ = (text, max_width_pt);
-    todo!("word wrap")
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            if text_width_pt(word) > max_width_pt {
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                }
+                for c in word.chars() {
+                    if !line.is_empty() && text_width_pt(&line) + text_width_pt(c.encode_utf8(&mut [0; 4])) > max_width_pt {
+                        lines.push(std::mem::take(&mut line));
+                    }
+                    line.push(c);
+                }
+                continue;
+            }
+            if line.is_empty() {
+                line.push_str(word);
+            } else if text_width_pt(&line) + text_width_pt(" ") + text_width_pt(word) <= max_width_pt {
+                line.push(' ');
+                line.push_str(word);
+            } else {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -251,8 +309,9 @@ struct Subtitle {
 
 /// Opacity of a subtitle `age` seconds after it appeared, `ended_age` seconds after its `end`.
 pub fn subtitle_opacity(age: f32, ended_age: Option<f32>) -> f32 {
-    let _ = (age, ended_age);
-    todo!("fade")
+    let fade_in = smooth_ramp(age / SUBTITLE_FADE_IN_SEC);
+    let fade_out = ended_age.map_or(1.0, |e| 1.0 - smooth_ramp((e - SUBTITLE_HOLD_SEC) / SUBTITLE_FADE_SEC));
+    fade_in * fade_out
 }
 
 /// The slice of `lines` to show: all of them when they fit, otherwise the window ending at the
@@ -333,6 +392,7 @@ pub struct Conversation {
     silence: f32,
     clock: f32,
     saccade: [f32; 2],
+    saccade_goal: [f32; 2],
     next_saccade: f32,
     rng: u32,
     wave_delta: Offsets,
@@ -362,6 +422,7 @@ impl Conversation {
             silence: 0.0,
             clock: 0.0,
             saccade: [0.0; 2],
+            saccade_goal: [0.0; 2],
             next_saccade: 0.8,
             rng: 0x9E37_79B9,
             wave_delta: Offsets::from_pose_delta(poses, "wave"),
@@ -408,6 +469,7 @@ impl Conversation {
             }
             Incoming::End { .. } => {
                 self.speaking = false;
+                self.visemes.set_target([0.0; 5]);
                 if let Some(s) = &mut self.subtitle {
                     s.ended_age.get_or_insert(0.0);
                 }
@@ -480,7 +542,11 @@ impl Conversation {
         self.next_saccade -= dt;
         if self.next_saccade <= 0.0 {
             self.next_saccade = 0.9 + self.rand01() * 2.0;
-            self.saccade = [(self.rand01() - 0.5) * 0.05, (self.rand01() - 0.5) * 0.10];
+            self.saccade_goal = [(self.rand01() - 0.5) * 0.05, (self.rand01() - 0.5) * 0.10];
+        }
+        let follow = ease(dt, 14.0);
+        for (cur, goal) in self.saccade.iter_mut().zip(self.saccade_goal) {
+            *cur += (goal - *cur) * follow;
         }
 
         for g in &mut self.gestures {
@@ -522,7 +588,7 @@ impl Conversation {
         o.add(NECK, [0.0, 0.05 * wt * side, 0.0]);
 
         // Speaking: head bobs on syllable energy, gentle sway, eyes wander, small hand talk.
-        let bob = self.accent * 0.10 * ws;
+        let bob = self.accent * 0.14 * ws;
         o.add(HEAD, [bob, 0.04 * ws * (t * 0.9).sin() + 0.015 * ws * (t * 2.3).sin(), 0.03 * ws * (t * 1.7).sin() + 0.02 * ws * (t * 0.63).sin()]);
         o.add(NECK, [bob * 0.5, 0.0, 0.0]);
         o.add(CHEST, [self.accent * 0.025 * ws, 0.0, 0.0]);
