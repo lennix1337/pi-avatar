@@ -259,11 +259,12 @@ async def amain(args) -> None:
     await mic.close()
     await asyncio.wait_for(run, 120)
     await pet
-    report(out, args, turns, voice, sink, pet_frames, boot_s, memory, peak_clients)
+    report(out, args, turns, voice, sink, pet_frames, boot_s, memory, peak_clients, comp.turn_log)
 
 
-def report(out: Path, args, turns, voice: Probe, sink, pet_frames, boot_s, memory, peak_clients) -> None:
+def report(out: Path, args, turns, voice: Probe, sink, pet_frames, boot_s, memory, peak_clients, turn_log) -> None:
     rows = []
+    user_logs = [e for e in turn_log if e.get("kind") == "user"]
     for t in turns:
         n, mark = t["turn"], t["mark"]
         utt = voice.utts[n - 1]
@@ -278,6 +279,7 @@ def report(out: Path, args, turns, voice: Probe, sink, pet_frames, boot_s, memor
             "speech_end_to_text_s": utt["t_text"] - mark["end"],
             "stt_s": utt["stt_s"],
             "text_to_first_sentence_s": first["t_submit"] - utt["t_text"] if first else None,
+            "llm_first_sentence_s": user_logs[n - 1]["first_sentence_s"] if n - 1 < len(user_logs) else None,
             "first_sentence_to_first_audio_s": fa_first - first["t_submit"] if fa_first else None,
             "speech_end_to_first_audio_s": fa_any - mark["end"] if fa_any else None,
             "first_audio_to_mouth_s": first["t_mouth"] - fa_first if first and first["t_mouth"] and fa_first else None,
