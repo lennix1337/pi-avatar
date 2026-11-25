@@ -33,7 +33,6 @@ use rune::{
     TextStyle, WindowHandle, WindowOptions, col, el, row, text,
 };
 
-use crate::companion;
 use crate::conversation::{Conversation, SubtitleView};
 use crate::delight::DelightController;
 use crate::harness::{HarnessMood, HarnessWatcher, MoodPresentation, mood_preset};
