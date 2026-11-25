@@ -1,0 +1,160 @@
+{
+ "boot_s": 0.9953496999805793,
+ "model": "anthropic/claude-sonnet-5-5",
+ "turns": [
+  {
+   "turn": 1,
+   "kind": "normal",
+   "said": "Oi, tudo bem? Acordei agora e já quero conversar com você.",
+   "heard": "Oi, tudo bem? Acordei agora e já quero conversar com você.",
+   "speech_end_to_text_s": 0.8422726000426337,
+   "stt_s": 0.09508860000642017,
+   "text_to_first_sentence_s": 0.7085098999668844,
+   "llm_first_sentence_s": 0.7189999999827705,
+   "first_sentence_to_first_audio_s": 0.25228499999502674,
+   "speech_end_to_first_audio_s": 1.8030675000045449,
+   "first_audio_to_mouth_s": 0.39301050000358373,
+   "total_s": 12.85789730004035,
+   "reply_audio_s": 11.00625850340136,
+   "filler": [],
+   "sentences": [
+    "Acordou agora?",
+    "São quase três da manhã, criatura.",
+    "Isso não é acordar, é uma falha no sistema.",
+    "Perdeu o sono ou teve sonho esquisito?"
+   ]
+  },
+  {
+   "turn": 2,
+   "kind": "normal",
+   "said": "Hoje eu passei o dia inteiro em reunião, tô exausto.",
+   "heard": "Hoje eu passei o dia inteiro em reunião, estou exausto.",
+   "speech_end_to_text_s": 1.0128454000223428,
+   "stt_s": 0.07700210000621155,
+   "text_to_first_sentence_s": 0.700019899988547,
+   "llm_first_sentence_s": 0.7029999999795109,
+   "first_sentence_to_first_audio_s": 0.2533967000199482,
+   "speech_end_to_first_audio_s": 1.966262000030838,
+   "first_audio_to_mouth_s": 0.3866277000051923,
+   "total_s": 16.902075699996203,
+   "reply_audio_s": 14.907210884353741,
+   "filler": [],
+   "sentences": [
+    "Que crueldade.",
+    "Dia inteiro de reunião e ainda acorda de madrugada, o corpo nem descansa de graça.",
+    "Pelo menos me diz que teve café e alguém falou \"vamos alinhar\" umas vinte vezes."
+   ]
+  },
+  {
+   "turn": 3,
+   "kind": "normal",
+   "said": "Você acha que eu devo jantar pizza ou lámen?",
+   "heard": "Você acha que eu devo jantar pizza ou lâmina?",
+   "speech_end_to_text_s": 0.7810439000022598,
+   "stt_s": 0.06625410000560805,
+   "text_to_first_sentence_s": 0.7375620999955572,
+   "llm_first_sentence_s": 0.7349999999860302,
+   "first_sentence_to_first_audio_s": 0.24228730000322685,
+   "speech_end_to_first_audio_s": 1.7608933000010438,
+   "first_audio_to_mouth_s": 0.4321415000013076,
+   "total_s": 14.389559699979145,
+   "reply_audio_s": 12.60843537414966,
+   "filler": [],
+   "sentences": [
+    "Lâmina?",
+    "Peraí, isso foi o reconhecimento de voz ou você tá planejando algo sinistro?",
+    "Enfim, pizza, sem discussão.",
+    "Lâmina não tem queijo."
+   ]
+  },
+  {
+   "turn": 4,
+   "kind": "normal",
+   "said": "Me conta uma curiosidade aleatória sobre o espaço.",
+   "heard": "Me conta uma curiosidade aleatória sobre o espaço.",
+   "speech_end_to_text_s": 0.9688724000006914,
+   "stt_s": 0.06688900000881404,
+   "text_to_first_sentence_s": 1.2371638999902643,
+   "llm_first_sentence_s": 1.25,
+   "first_sentence_to_first_audio_s": 0.543355000030715,
+   "speech_end_to_first_audio_s": 2.3900587999960408,
+   "first_audio_to_mouth_s": 1.4540037999977358,
+   "total_s": 16.15265519998502,
+   "reply_audio_s": 13.722993197278912,
+   "filler": [
+    "ó..."
+   ],
+   "sentences": [
+    "Em Vênus o dia é mais longo que o ano.",
+    "Ele demora mais pra dar uma volta em si mesmo do que pra dar a volta no Sol.",
+    "Ou seja, lá você nunca chega no fim da segunda-feira."
+   ]
+  },
+  {
+   "turn": 5,
+   "kind": "normal",
+   "said": "Valeu, você é bem divertida. Agora preciso dormir, boa noite!",
+   "heard": "Valeu, você é bem divertida. Agora preciso dormir. Boa noite.",
+   "speech_end_to_text_s": 0.8587815000209957,
+   "stt_s": 0.09582689998205751,
+   "text_to_first_sentence_s": 0.7509139999747276,
+   "llm_first_sentence_s": 0.75,
+   "first_sentence_to_first_audio_s": 0.24359530000947416,
+   "speech_end_to_first_audio_s": 1.8532908000051975,
+   "first_audio_to_mouth_s": 0.4948465999914333,
+   "total_s": 10.881393100018613,
+   "reply_audio_s": 8.986122448979591,
+   "filler": [],
+   "sentences": [
+    "Valeu você, vai lá.",
+    "E se sonhar com reunião, eu não tenho nada a ver com isso.",
+    "Boa noite, criatura."
+   ]
+  },
+  {
+   "turn": 6,
+   "kind": "story-interrupted",
+   "said": "Me conta uma história bem comprida sobre um dragão que tinha medo de fogo.",
+   "heard": "Me conta uma história bem concomprida sobre um dragão que tinha medo de fogo.",
+   "speech_end_to_text_s": 0.8786483000149019,
+   "stt_s": 0.09979290002956986,
+   "text_to_first_sentence_s": 0.7723578999866731,
+   "llm_first_sentence_s": 0.7660000000032596,
+   "first_sentence_to_first_audio_s": null,
+   "speech_end_to_first_audio_s": null,
+   "first_audio_to_mouth_s": null,
+   "total_s": 5.965550700027961,
+   "reply_audio_s": 7.523265306122449,
+   "filler": [],
+   "sentences": [
+    "Olha, ele disse que ia dormir e já tá pedindo história.",
+    "Tá, mas é uma só e bem baixinho."
+   ]
+  },
+  {
+   "turn": 7,
+   "kind": "interruption",
+   "said": "Espera, para um segundo, deixa eu te falar uma coisa.",
+   "heard": "Espera, para um segundo, deixa eu te falar uma coisa.",
+   "speech_end_to_text_s": 0.7922872999915853,
+   "stt_s": 0.07366729999193922,
+   "text_to_first_sentence_s": 0.8716066000051796,
+   "llm_first_sentence_s": 0.8600000000442378,
+   "first_sentence_to_first_audio_s": 0.4259940999909304,
+   "speech_end_to_first_audio_s": 2.0898879999876954,
+   "first_audio_to_mouth_s": 0.6391570999985561,
+   "total_s": 12.427151100011542,
+   "reply_audio_s": 10.309659863945578,
+   "filler": [],
+   "sentences": [
+    "Hm, \"preciso dormir\" durou quanto, uns dois minutos?",
+    "Pode falar, tô ouvindo.",
+    "O dragão tá esperando de braços cruzados."
+   ]
+  }
+ ],
+ "barge_in": {
+  "user_voice_to_speech_confirmed_s": 0.344,
+  "user_voice_to_audio_cut_s": 0.344
+ }
+}
