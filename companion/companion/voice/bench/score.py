@@ -36,8 +36,13 @@ def wer(ref: list[str], hyp: list[str]) -> float:
 
 def utmos(files: list[Path]) -> list[float] | None:
     try:
+        try:
+            import truststore
+
+            truststore.inject_into_ssl()   # Windows: use the OS certificate store for the hub download
+        except ImportError:
+            pass
         import torch
-        import torchaudio
 
         model = torch.hub.load("tarepan/SpeechMOS:v1.2.0", "utmos22_strong", trust_repo=True).eval()
     except Exception as e:  # network/hub problems must not hide the WER numbers

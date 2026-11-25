@@ -6,6 +6,7 @@ import json
 import os
 import struct
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 
@@ -95,13 +96,15 @@ class CanaryStt(SttBackend):
     def load(self) -> None:
         if not (self.model_path and self.node_modules):
             raise RuntimeError("canary needs stt.canary.model_path and stt.canary.node_modules")
+        self._err = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(
             [self.node, str(HERE / "canary_worker.mjs"), self.node_modules, self.model_path, self.language,
              self.backend],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._err)
         ready = json.loads(self.proc.stdout.readline() or b"{}")
         if not ready.get("ready"):
-            raise RuntimeError(f"canary sidecar failed to start: {ready}")
+            self._err.seek(0)
+            raise RuntimeError(f"canary sidecar failed to start: {ready} {self._err.read().decode(errors='replace')[-800:]}")
 
     def transcribe(self, audio: np.ndarray) -> str:
         pcm = np.ascontiguousarray(audio, dtype="<f4")
