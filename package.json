@@ -1,0 +1,7 @@
+{
+  "name": "pi-avatar",
+  "private": true,
+  "scripts": {
+    "test": "node \"$HOME/.pi/agent/bin/pc-task.mjs\" --name pet-test --timeout 900 scripts/pc-test.cmd"
+  }
+}
