@@ -199,3 +199,27 @@ async def test_session_resets_after_n_turns_and_reseeds_memory(tmp_path):
         await say(comp, t)
     assert llm.sessions == 2
     assert "sessão nova" in llm.prompts[2]
+
+
+async def test_run_lets_the_last_reply_finish_when_input_ends(tmp_path):
+    comp, llm, voice, sink, mem = build(tmp_path)
+    comp.server = _FakeServer(sink)
+    voice.feed("oi")
+    voice.finish()
+    await asyncio.wait_for(comp.run(), 5)
+    assert len(voice.spoken) == 2 and sink.of("end")
+
+
+class _FakeServer:
+    def __init__(self, sink):
+        self.sink = sink
+        self.on_message = self.on_connect = None
+
+    async def start(self):
+        return None
+
+    async def close(self):
+        return None
+
+    def send(self, msg):
+        self.sink.send(msg)

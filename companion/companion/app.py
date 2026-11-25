@@ -82,6 +82,7 @@ class Companion:
         try:
             async for utt in self.voice.listen():
                 await self.on_utterance(utt)
+            await self._wait_turn()  # a entrada acabou (stdin fechou): deixa ela terminar a última fala
         finally:
             await self.shutdown()
 
