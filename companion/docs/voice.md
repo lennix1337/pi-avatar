@@ -138,6 +138,8 @@ WAV → `listen()` → `Utterance`. Um teste opcional (`COMPANION_VOICE_E2E=1`) 
 
 ## Limites conhecidos
 
+- `python -m companion --doctor` rodou no PC Windows (main d1eb1f4): pi, porta 47800, extra de voz, microfone e caixa de som padrão
+  (Logitech G933) detectados, sem abrir áudio. Isso só prova que os dispositivos existem.
 - **Não testado com microfone e caixa de som reais** (rodar só com WAV e placa de som simulada): `SoundDeviceMic`/`SoundDeviceSink`
   e a calibração do anti-eco em sala real precisam de um teste ao vivo com fone e com caixa. Se houver falso barge-in, subir
   `echo.margin` ou usar `echo.mode = "mute"`.
