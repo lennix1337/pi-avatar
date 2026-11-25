@@ -495,10 +495,6 @@ impl Conversation {
             || self.mix.expr.iter().any(|x| *x > 0.01)
     }
 
-    pub fn thinking(&self) -> bool {
-        self.thinking
-    }
-
     pub fn subtitle_view(&self) -> Option<SubtitleView> {
         let s = self.subtitle.as_ref()?;
         let (a, b) = visible_window(&s.lines, s.age, s.ended_age.is_some());

@@ -1046,7 +1046,7 @@ fn conversation_scene(s: &mut PetAppState, lines: &[&str], mouth: Option<&str>, 
     }
 }
 
-const SCENE_SAY: &str = r#"{"t":"say","id":"s1","text":"Oi! Eu sou a Pi, e agora consigo falar com você.","emotion":"happy"}"#;
+const SCENE_SAY: &str = r#"{"t":"say","id":"s1","text":"Oi! Eu sou a Pi, e agora consigo falar com você."}"#;
 const SCENE_SPEAKING: &str = r#"{"t":"state","speaking":true}"#;
 
 fn scene_talk_aa(s: &mut PetAppState) {
