@@ -12,15 +12,32 @@ voz/texto ──► Companion (app.py) ──► Pi (--mode rpc, processo persis
 
 ## Rodar
 
+**No PC (Windows), um comando sobe tudo** — pet + cérebro + voz real:
+
+```
+scripts\start-companion.cmd                  # voz real (microfone e alto-falante padrão do Windows)
+scripts\start-companion.cmd --text           # mesmo pet, conversa digitada
+scripts\start-companion.cmd --no-pet --model anthropic/claude-haiku-5-5
+```
+
+Na primeira vez baixa as dependências de voz (`uv sync --extra voice`) e compila o pet; as seguintes abrem em segundos.
+O pet é aberto se ainda não estiver rodando e fechado quando o companion sai. Dispositivos de áudio, STT, TTS e
+anti-eco ficam em `"voice": {...}` do `companion.json` (`"text_mode": true` faz `--text` virar o padrão).
+Sem o extra `voice` (por exemplo na VM Linux) só o modo `--text` funciona e o `uv run pytest` simples passa do mesmo jeito.
+
+Só o companion, sem o pet:
+
 ```
 cd companion
 uv run python -m companion --text            # conversa digitada, sem áudio (precisa do Pi logado)
 uv run python -m companion --text --fake-llm # sem rede, respostas de mentira
 uv run python -m companion --state-file C:\caminho\harness.json   # eventos do harness (ciRed, merged, workers, waitingOperator, idleMinutes)
-uv run pytest
+uv run pytest                                              # cérebro (sem o extra)
+uv run --extra voice pytest tests voice-tests              # cérebro + voz
+uv run --extra voice python scripts/e2e_voice.py --out docs/e2e   # conversa completa sem microfone (ver abaixo)
 ```
 
-`/sair` encerra o modo texto. A voz real é o pacote `companion.voice` (função `create_voice()`); sem ele só o modo `--text` funciona.
+`/sair` encerra o modo texto. A voz real é o pacote `companion.voice` (`create_voice()` em `__main__.py` a escolhe; `--text` ou `"text_mode": true` trocam por `FakeVoice`).
 
 ## Configuração
 

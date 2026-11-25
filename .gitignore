@@ -1,1 +1,5 @@
 worktrees/
+
+# saída do e2e de voz: só os textos vão para o git; áudios e quadros ficam locais
+companion/docs/e2e/*.wav
+companion/docs/e2e/pet-frames.jsonl
