@@ -30,7 +30,7 @@ uv run pytest
 |---|---|---|
 | `name` | `Jujuba` | nome da personagem |
 | `user_name` | vazio | como ela chama o usuário (vazio: "ele") |
-| `model` | `anthropic/claude-haiku-5-5` | modelo do Pi (`provider/id`); `summarizer_model` usa outro para os resumos |
+| `model` | `anthropic/claude-sonnet-5-5` | modelo do Pi (`provider/id`); `summarizer_model` usa outro para os resumos |
 | `pi_command` | `pi` | executável do Pi; a conta/OAuth é a do próprio Pi, o companion nunca mexe nelas |
 | `persona_path` | embutida | arquivo de persona próprio (`{name}` e `{user}` são substituídos) |
 | `filler_after_s` | `1.2` | só enche o silêncio ("hmm", "peraí") se o primeiro token demorar mais que isso |

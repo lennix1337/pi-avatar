@@ -40,7 +40,7 @@ class Config:
     host: str = "127.0.0.1"
     port: int = 47800
     pi_command: str = "pi"
-    model: str = "anthropic/claude-haiku-5-5"
+    model: str = "anthropic/claude-sonnet-5-5"
     summarizer_model: str = ""      # vazio = o mesmo modelo da conversa
     thinking: str = "off"
     persona_path: str = ""          # vazio = persona embutida
