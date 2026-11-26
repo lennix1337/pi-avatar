@@ -66,7 +66,7 @@ class Speaker:
             return
         loop = asyncio.get_running_loop()
         item = _Item(text, emotion, on_mouth, loop.create_future(),
-                     StreamingLipSync(self.backend.sample_rate, self.lip_cfg))
+                     StreamingLipSync(self.sink.sample_rate, self.lip_cfg))
         with self._lock:
             self._items.append(item)
             if self._worker is None:
@@ -137,7 +137,7 @@ class Speaker:
                             item.start = off
                             item.first_audio_s = time.perf_counter() - item.t_submit
                         item.end = off + x.size / self.sink.sample_rate
-                    item.lip.feed(chunk)
+                    item.lip.feed(x)
             except Exception as e:  # handed to the awaiting speak()
                 item.error = e
                 log.exception("tts failed for %r", item.text[:40])
@@ -159,7 +159,7 @@ class Speaker:
         while True:
             nxt += period
             await asyncio.sleep(max(0.0, nxt - time.monotonic()))
-            pos = self.sink.position()
+            pos, audible = self.sink.playback()
             with self._lock:
                 items = list(self._items)
             if not items:
@@ -170,9 +170,13 @@ class Speaker:
                 if it.synth_done and (it.start is None or pos >= it.end - 1e-6):
                     self._finish(it)
                     continue
-                if it.start is not None and pos >= it.start:
+                if audible and it.start is not None and it.start <= pos < it.end:
                     self._emit(it.on_mouth, it.lip.frame_at(pos - it.start))
                     last_cb = it.on_mouth
+                    break
+                if last_cb is not None:
+                    self._emit(last_cb, zero_mouth())
+                    last_cb = None
                 break
 
     def _finish(self, item: _Item) -> None:

@@ -7,6 +7,8 @@
 //! Angle conventions follow the rest of the rig: positive head/chest pitch looks/leans down,
 //! negative looks/leans up or back; eyes are `[pitch, yaw]`.
 
+use std::collections::HashMap;
+
 use crate::animation::smooth_ramp;
 use crate::poses::PoseMap;
 use crate::protocol::{EmotionKind, GestureKind, Incoming};
@@ -102,6 +104,7 @@ impl Offsets {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ConvFrame {
     pub active: bool,
+    pub speaking: bool,
     pub offsets: Offsets,
     /// Additive weights for `happy, angry, sad, relaxed, surprised`.
     pub expr: [f32; 5],
@@ -162,7 +165,10 @@ pub fn mouth_attenuation(happy: f32, sad: f32, surprised: f32) -> f32 {
 
 // ------------------------------------------------------------------------------ emotions
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub type EmotionProfiles = HashMap<EmotionKind, EmotionProfile>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct EmotionProfile {
     /// `happy, angry, sad, relaxed, surprised`.
     pub expr: [f32; 5],
@@ -195,33 +201,6 @@ impl EmotionProfile {
         lerp(&mut self.lids, goal.lids);
         lerp(&mut self.chest_pitch, goal.chest_pitch);
         lerp(&mut self.shoulder_lift, goal.shoulder_lift);
-    }
-}
-
-/// Emotion name → blend of VRM expressions plus subtle posture.
-pub fn emotion_profile(kind: EmotionKind) -> EmotionProfile {
-    use EmotionKind::*;
-    // expr: happy, angry, sad, relaxed, surprised. head: pitch (+ down), yaw, roll.
-    let p = |expr: [f32; 5], lids: f32, head: [f32; 3], chest_pitch: f32, shoulder_lift: f32| EmotionProfile {
-        expr,
-        lids,
-        head,
-        chest_pitch,
-        shoulder_lift,
-    };
-    match kind {
-        Neutral => EmotionProfile::default(),
-        Happy => p([0.85, 0.0, 0.0, 0.0, 0.0], 0.0, [-0.03, 0.0, 0.04], -0.01, 0.02),
-        Angry => p([0.0, 0.80, 0.0, 0.0, 0.0], 0.05, [0.05, 0.0, 0.0], 0.02, 0.03),
-        Sad => p([0.0, 0.0, 0.85, 0.0, 0.0], 0.10, [0.10, 0.0, 0.03], 0.04, -0.02),
-        Relaxed => p([0.0, 0.0, 0.0, 0.85, 0.0], 0.12, [0.0, 0.0, 0.04], -0.01, -0.01),
-        Surprised => p([0.0, 0.0, 0.0, 0.0, 0.85], 0.0, [-0.06, 0.0, 0.0], -0.03, 0.04),
-        Smug => p([0.35, 0.0, 0.0, 0.45, 0.0], 0.22, [-0.08, 0.10, 0.05], -0.02, 0.0),
-        Teasing => p([0.60, 0.0, 0.0, 0.10, 0.0], 0.08, [-0.02, 0.06, 0.15], 0.0, 0.02),
-        Embarrassed => p([0.30, 0.0, 0.30, 0.0, 0.10], 0.05, [0.12, -0.14, 0.08], 0.03, 0.06),
-        Bored => p([0.0, 0.0, 0.10, 0.55, 0.0], 0.30, [0.06, 0.0, 0.06], 0.03, -0.02),
-        Excited => p([0.85, 0.0, 0.0, 0.0, 0.25], 0.0, [-0.05, 0.0, 0.0], -0.02, 0.06),
-        Confused => p([0.0, 0.22, 0.10, 0.0, 0.22], 0.0, [0.0, 0.06, 0.16], 0.0, 0.01),
     }
 }
 
@@ -397,11 +376,13 @@ pub struct Conversation {
     rng: u32,
     wave_delta: Offsets,
     cheer_delta: Offsets,
+    emotions: EmotionProfiles,
 }
 
 impl Conversation {
-    pub fn new(poses: &PoseMap) -> Self {
+    pub fn new(poses: &PoseMap, emotions: EmotionProfiles) -> Self {
         Self {
+            emotions,
             listening: false,
             thinking: false,
             speaking: false,
@@ -522,7 +503,7 @@ impl Conversation {
 
         self.emotion_ttl -= dt;
         let goal = if self.emotion_ttl > 0.0 {
-            emotion_profile(self.emotion).scaled(self.intensity)
+            self.emotions.get(&self.emotion).copied().unwrap_or_default().scaled(self.intensity)
         } else {
             EmotionProfile::default()
         };
@@ -608,7 +589,7 @@ impl Conversation {
             *x = x.clamp(0.0, 1.0);
         }
 
-        ConvFrame { active: self.is_active(), offsets: o, expr, lids: m.lids.clamp(0.0, 1.0), mouth }
+        ConvFrame { active: self.is_active(), speaking: self.speaking, offsets: o, expr, lids: m.lids.clamp(0.0, 1.0), mouth }
     }
 
     fn gesture_into(&self, g: ActiveGesture, o: &mut Offsets, expr: &mut [f32; 5], mouth: &mut [f32; 5]) {
@@ -706,8 +687,18 @@ mod tests {
         m
     }
 
+    fn emotions() -> EmotionProfiles {
+        let library: crate::poses::PoseLibrary =
+            serde_json::from_str(include_str!("../../poses.json")).unwrap();
+        library.emotions
+    }
+
+    fn emotion_profile(kind: EmotionKind) -> EmotionProfile {
+        emotions()[&kind]
+    }
+
     fn conv() -> Conversation {
-        Conversation::new(&poses())
+        Conversation::new(&poses(), emotions())
     }
 
     fn run(c: &mut Conversation, secs: f32) {

@@ -6,12 +6,20 @@ use std::f32::consts::{PI, TAU};
 use std::path::Path;
 
 use crate::animation::AnimationLife;
-use crate::conversation::{CONV_BONES, ConvFrame, mouth_attenuation};
+use crate::conversation::{CONV_BONES, ConvFrame, EmotionProfiles, mouth_attenuation};
 use crate::harness::HarnessMood;
 use crate::pet_state::{compute_walk_phase_delta, facing_to_yaw_rad};
 
 pub type Pose = BTreeMap<String, [f32; 3]>;
 pub type PoseMap = BTreeMap<String, Pose>;
+
+#[derive(serde::Deserialize)]
+pub struct PoseLibrary {
+    #[serde(default)]
+    pub emotions: EmotionProfiles,
+    #[serde(flatten)]
+    pub poses: PoseMap,
+}
 
 pub const HIP_SWING_RAD: f32 = 0.30;
 pub const EXPRESSION_NAMES: [&str; 5] = ["happy", "angry", "sad", "relaxed", "surprised"];
@@ -38,11 +46,16 @@ pub fn ease_in_out_cubic(t: f32) -> f32 {
     }
 }
 
-pub fn load_poses(path: &Path) -> Result<PoseMap, String> {
-    let raw = std::fs::read_to_string(path)
+pub fn load_pose_library(path: &Path) -> Result<PoseLibrary, String> {
+    let raw = std::fs::read(path)
         .map_err(|e| format!("failed to read poses file {}: {e}", path.display()))?;
-    serde_json::from_str::<PoseMap>(&raw)
+    serde_json::from_slice(&raw)
         .map_err(|e| format!("failed to parse poses JSON {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+pub fn load_poses(path: &Path) -> Result<PoseMap, String> {
+    load_pose_library(path).map(|library| library.poses)
 }
 
 pub fn interpolate_pose(from_pose: &Pose, to_pose: &Pose, t: f32) -> Pose {
@@ -532,8 +545,10 @@ impl PoseBlender {
         let idle = input.target_pose == "idle"
             && !input.walking
             && !input.cursor_attention
-            && input.harness_mood.is_none();
-        self.life.step(dt_sec, idle, input.harness_mood, input.eyes_closed);
+            && input.harness_mood.is_none()
+            && !self.conv.speaking;
+        let suspend_blink = input.eyes_closed || self.conv.speaking;
+        self.life.step(dt_sec, idle, input.harness_mood, suspend_blink);
         let drowsiness = if idle && !input.eyes_closed && input.petting_intensity < 0.1 {
             input.ambient_drowsiness.clamp(0.0, 1.0)
         } else {
@@ -634,7 +649,9 @@ impl PoseBlender {
         }
 
         if !forced_preview {
-            if self.eyes.iter().any(|x| x.abs() > 1e-4) {
+            if self.eyes.iter().any(|x| x.abs() > 1e-4)
+                || self.life.offset("leftEye")[1].abs() > 1e-4
+            {
                 bone_names.extend(["leftEye", "rightEye"]);
             }
             if self.life.offset("leftShoulder")[2].abs() > 1e-4 {
@@ -945,6 +962,37 @@ mod tests {
         assert!(e.expressions["relaxed"] >= 0.4);
         assert!(e.expressions["blink"] >= 0.3, "lid floor");
         assert!((e.pose["head"][0] - base.pose["head"][0] - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn speaking_suspends_idle_blinks_and_glances_until_end() {
+        use crate::{conversation::Conversation, protocol::Incoming};
+
+        let mut blender = talking_blender();
+        let mut conversation = Conversation::new(&PoseMap::new(), Default::default());
+        let input = BlenderInput {
+            dt_sec: 1.0 / 60.0,
+            target_pose: "idle",
+            target_expression: "neutral",
+            ..Default::default()
+        };
+        conversation.handle(Incoming::Say { id: "1".into(), text: "Oi".into(), emotion: None });
+        blender.set_conversation(conversation.frame());
+        for _ in 0..600 {
+            blender.step(input);
+            assert_eq!(blender.life.blink(), 0.0, "idle blink during speech");
+            assert_eq!(blender.life.offset("head"), [0.0; 3], "idle head motion during speech");
+            assert_eq!(blender.life.offset("leftEye"), [0.0; 3], "idle glance during speech");
+        }
+        conversation.handle(Incoming::End { id: "1".into() });
+        blender.set_conversation(conversation.frame());
+        let (mut blinked, mut glanced) = (false, false);
+        for _ in 0..600 {
+            blender.step(input);
+            blinked |= blender.life.blink() > 0.3;
+            glanced |= blender.evaluate(false).pose.get("leftEye").is_some_and(|eye| eye[1].abs() > 0.02);
+        }
+        assert!(blinked && glanced, "idle micro-motion must resume after speech");
     }
 
     #[test]
