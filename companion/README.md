@@ -72,6 +72,8 @@ O orquestrador conversa com a voz por `voiceapi.VoiceIO` (`listen()`, `speak(tex
 
 ## Medidas
 
+`uv run python scripts/eval_persona.py` roda 15 turnos em pt-BR sem Pi, áudio ou rede e imprime o transcrito. O replay checa brevidade, memória após reinício, repetição e identidade com respostas simuladas; não avalia a qualidade do modelo real.
+
 `uv run python scripts/bench.py --models anthropic/claude-haiku-5-5 ... --turns 13` mede, com o Pi real, o tempo do fim do texto até a primeira frase pronta. `scripts/sample_conversation.py` gera o transcrito de `docs/`.
 
 ### Latência (Pi real, 13 turnos, fim do texto → primeira frase pronta)

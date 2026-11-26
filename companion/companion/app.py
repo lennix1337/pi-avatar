@@ -12,7 +12,7 @@ from typing import Callable
 from . import protocol
 from .brain import persona
 from .brain.chunker import SentenceChunker
-from .brain.initiative import Harness, Initiative, Trigger, read_harness
+from .brain.initiative import Harness, Initiative, Trigger, line_key, read_harness
 from .brain.llm import LLM, LLMError
 from .brain.memory import Memory
 from .brain.tags import Segment, parse_segment
@@ -227,7 +227,8 @@ class Companion:
         lt = self.localtime()
         trig = self.initiative.check(self.clock(), lt.tm_hour, lt.tm_yday, self._read_harness())
         if trig:
-            await self._start_turn(trig.kind, persona.initiative_turn(trig, self._time_context(force=True)), trigger=trig)
+            prompt = persona.initiative_turn(trig, self._time_context(force=True), self.memory.data.initiative_lines)
+            await self._start_turn(trig.kind, prompt, trigger=trig)
 
     # --- contexto de tempo -------------------------------------------
     def _time_context(self, force: bool = False) -> list[str]:
@@ -289,7 +290,7 @@ class Companion:
         failed = False
         try:
             prompt = await self._prepare_session(prompt)
-            gen = asyncio.create_task(self._generate(prompt, queue))
+            gen = asyncio.create_task(self._generate(prompt, queue, trigger is not None))
             filler_wait = self.cfg.filler_after_s if kind == "user" else None
             first_at: float | None = None
             while True:
@@ -305,7 +306,7 @@ class Companion:
                 if tag == "error":
                     failed = True
                     log.warning("LLM falhou: %s", value)
-                    if not self._said:
+                    if not trigger and not self._said:
                         await self._say_segment(parse_segment(self.rng.choice(FAILURES)))
                     break
                 if first_at is None:
@@ -324,19 +325,29 @@ class Companion:
                 self.voice.cancel()
             self._finish_turn(kind, user_text, trigger, self._last_id, cancelled, failed)
 
-    async def _generate(self, prompt: str, queue: asyncio.Queue) -> None:
+    async def _generate(self, prompt: str, queue: asyncio.Queue, spontaneous: bool) -> None:
         chunker = SentenceChunker()
+        heard = {line_key(line) for line in self.memory.data.initiative_lines} if spontaneous else None
+
+        def enqueue(raw: str) -> None:
+            segment = parse_segment(raw)
+            if heard is not None and segment.text:
+                key = line_key(segment.text)
+                if key in heard:
+                    return
+                heard.add(key)
+            queue.put_nowait(("seg", segment))
+
+        result = ("done", None)
         try:
             async for delta in self.llm.stream(prompt):
                 for raw in chunker.feed(delta):
-                    queue.put_nowait(("seg", parse_segment(raw)))
-            for raw in chunker.flush():
-                queue.put_nowait(("seg", parse_segment(raw)))
-            queue.put_nowait(("done", None))
+                    enqueue(raw)
         except LLMError as exc:
-            for raw in chunker.flush():
-                queue.put_nowait(("seg", parse_segment(raw)))
-            queue.put_nowait(("error", str(exc)))
+            result = ("error", str(exc))
+        for raw in chunker.flush():
+            enqueue(raw)
+        queue.put_nowait(result)
 
     async def _say_filler(self) -> None:
         """Enche o silêncio sem segurar a fila: a primeira frase real vai para a voz enquanto o filler ainda toca."""
@@ -415,7 +426,9 @@ class Companion:
             return
         if user_text:
             self.memory.add("user", user_text)
-        if spoken:
+        if spoken and trigger:
+            self.memory.add_initiative(spoken, self._said, interrupted=cancelled)
+        elif spoken:
             self.memory.add("companion", spoken, interrupted=cancelled)
         if cancelled and spoken:
             self._interrupt_note = f'você foi interrompida; só tinha dito: "{spoken}"'

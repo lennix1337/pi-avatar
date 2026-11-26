@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,19 @@ def time_of_day(hour: int) -> str:
     return "noite"
 
 
+_SILENCE_ANGLES = (
+    "faça uma observação absurda sobre a vida no desktop",
+    "dê uma opinião firme sobre uma bobagem nova",
+    "relembre uma deixa leve que ele deu, se houver; senão, faça uma confissão engraçada",
+    "invente uma pequena rivalidade sua com um objeto comum",
+)
+
+
+def line_key(text: str) -> str:
+    """Compara fala já sem etiquetas, ignorando caixa, espaços e pontuação."""
+    return " ".join(re.findall(r"\w+", text.casefold()))
+
+
 class Initiative:
     def __init__(self, cfg: InitiativeConfig, rng: random.Random | None = None):
         self.cfg = cfg
@@ -68,6 +82,7 @@ class Initiative:
         self._last_spoke = float("-inf")      # última vez que ela falou (qualquer motivo)
         self._unanswered = 0
         self._next_at: float | None = None
+        self._silence_angle = 0
         self._greeted = False
         self._late_day: int | None = None
         self._harness: Harness | None = None
@@ -133,9 +148,11 @@ class Initiative:
         if self._next_at is None:
             self._next_at = anchor + self.interval()
         if now >= self._next_at:
-            self._next_at = None
-            minutes = max(int((now - anchor) // 60), 1)
-            return Trigger("silence", f"ele está quieto há uns {minutes} minutos; você puxa assunto, ou solta um pensamento aleatório, ou provoca")
+            # Se a fala falhar ou for descartada, não dispare no próximo tick.
+            self._next_at = now + self.interval()
+            angle = _SILENCE_ANGLES[self._silence_angle]
+            self._silence_angle = (self._silence_angle + 1) % len(_SILENCE_ANGLES)
+            return Trigger("silence", f"ninguém falou durante um tempo; {angle}")
         return None
 
     def _harness_trigger(self, now: float, h: Harness | None, quiet: bool) -> Trigger | None:

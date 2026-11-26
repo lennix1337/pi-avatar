@@ -83,3 +83,21 @@ def test_prompt_block_has_facts_jokes_and_recent(tmp_path):
 def test_corrupt_file_starts_empty(tmp_path):
     (tmp_path / "mem.json").write_text("{{{")
     assert make(tmp_path).data.recent == []
+
+
+async def test_messages_arriving_during_summary_stay_fresh_when_window_rolls(tmp_path):
+    m = make(tmp_path, window=3, summarize_after=2)
+    m.add("user", "meu gato chama Bolinha")
+    m.add("companion", "Tá anotado no meu coração de silício.")
+    m.add("user", "prefiro café sem açúcar")
+
+    async def complete(prompt):
+        assert "Bolinha" in prompt and "café" in prompt
+        m.add("user", "meu cachorro chama Pistache")
+        m.add("companion", "Sua casa virou uma sorveteria.")
+        return '{"facts": ["gato chamado Bolinha", "prefere café sem açúcar"]}'
+
+    assert await m.summarize(complete)
+    reloaded = make(tmp_path, window=3, summarize_after=2)
+    assert reloaded.needs_summary()
+    assert reloaded.data.unsummarized == 2
