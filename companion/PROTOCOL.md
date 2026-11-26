@@ -10,8 +10,8 @@ Campos desconhecidos são ignorados pelos dois lados; mensagem inválida é desc
 | --- | --- | --- |
 | `state` | `listening`, `thinking`, `speaking` (bool) | indicador discreto: ouvindo (olhar atento), pensando (olhar para cima/lado), falando |
 | `say` | `id`, `text`, `emotion` | começa a legenda (balão) com `text`; troca a expressão para `emotion` |
-| `mouth` | `aa`, `ih`, `ou`, `ee`, `oh` (0..1) | pesos de visema do quadro atual, ~30 Hz enquanto o áudio toca; zero tudo se nada chegar por 150 ms |
-| `emotion` | `name`, `intensity` (0..1) | expressão VRM: `happy`, `angry`, `sad`, `relaxed`, `surprised`, `neutral`; nomes extras (`smug`, `teasing`, `embarrassed`, `bored`, `excited`, `confused`) são mapeados pelo pet para combinações das expressões VRM e da pose |
+| `mouth` | `aa`, `ih`, `ou`, `ee`, `oh` (0..1) | pesos de visema extraídos do PCM de saída, ~30 Hz no relógio do dispositivo de áudio; zero nas pausas do dispositivo ou se nada chegar por 150 ms |
+| `emotion` | `name`, `intensity` (0..1) | expressão VRM: `happy`, `angry`, `sad`, `relaxed`, `surprised`, `neutral`; nomes extras (`smug`, `teasing`, `embarrassed`, `bored`, `excited`, `confused`) são mapeados pelo pet para combinações das expressões VRM e da pose em `poses.json` → `emotions` |
 | `gesture` | `name` | gesto curto: `wave`, `cheer`, `nod`, `shake`, `tilt`, `laugh`, `shrug`, `lean_in`, `look_away` |
 | `end` | `id` | fim da fala: a legenda some depois de ~1,5 s, boca fecha |
 

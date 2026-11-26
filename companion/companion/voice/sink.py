@@ -21,6 +21,8 @@ class BufferedSink:
         self._taken = 0                       # samples handed to the device
         self._written = 0                     # samples ever accepted (timeline end)
         self._rms_log: deque[tuple[int, float]] = deque(maxlen=400)  # (end sample, rms) of drained blocks
+        self._scheduled: deque[tuple[float, int, int]] = deque()  # (DAC start, first sample, end sample)
+        self._played = 0
 
     # -- producer side ------------------------------------------------
     def write(self, samples: np.ndarray) -> float:
@@ -41,8 +43,8 @@ class BufferedSink:
             self._written = self._taken
 
     # -- consumer side --------------------------------------------------
-    def take(self, n: int) -> np.ndarray:
-        """Take up to n samples (zero-padded to n) for the device."""
+    def take(self, n: int, *, dac_start: float | None = None) -> np.ndarray:
+        """Take up to n samples (zero-padded to n) and record when the real PCM will play."""
         out = np.zeros(n, np.float32)
         with self._lock:
             got = 0
@@ -56,6 +58,8 @@ class BufferedSink:
                     self._buf[0] = head[m:]
                 got += m
             self._buffered -= got
+            if got and dac_start is not None:
+                self._scheduled.append((dac_start, self._taken, self._taken + got))
             self._taken += got
             if got:
                 self._rms_log.append((self._taken, float(np.sqrt(np.mean(out[:got] ** 2)))))
@@ -73,6 +77,10 @@ class BufferedSink:
     def position(self) -> float:
         """Seconds of the timeline that are audible *now* (device latency removed)."""
         return max(0.0, self._taken / self.sample_rate - self.latency_s)
+
+    def playback(self) -> tuple[float, bool]:
+        """Audio timeline position and whether it points to PCM, not a padding gap."""
+        return self.position(), True
 
     def recent_rms(self, window_s: float = 0.3) -> float:
         """Loudest drained block over the last `window_s`: the echo reference."""
@@ -143,8 +151,26 @@ class SoundDeviceSink(BufferedSink):
             blocksize=int(sample_rate * block_ms / 1000), callback=self._callback, latency="low")
         self.latency_s = float(self._stream.latency)
 
-    def _callback(self, outdata, frames, _time, _status) -> None:
-        outdata[:, 0] = self.take(frames)
+    def _callback(self, outdata, frames, timing, _status) -> None:
+        outdata[:, 0] = self.take(frames, dac_start=timing.outputBufferDacTime)
+
+    def playback(self) -> tuple[float, bool]:
+        # PortAudio reports both times on the same clock. Only the actual PCM advances
+        # this timeline: the zero padding of an underrun must not consume future visemes.
+        now = self._stream.time
+        with self._lock:
+            while self._scheduled:
+                dac_start, start, end = self._scheduled[0]
+                if now < dac_start:
+                    break
+                if now < dac_start + (end - start) / self.sample_rate:
+                    return start / self.sample_rate + now - dac_start, True
+                self._played = end
+                self._scheduled.popleft()
+            return self._played / self.sample_rate, False
+
+    def position(self) -> float:
+        return self.playback()[0]
 
     def start(self) -> None:
         if not self._stream.active:

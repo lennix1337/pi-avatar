@@ -103,7 +103,7 @@ class LipSyncConfig:
     window_ms: float = 40.0
     floor_db: float = -55.0       # below this the mouth is shut
     attack: float = 0.65          # smoothing coefficient when opening (0..1, higher = faster)
-    release: float = 0.35         # ... when closing
+    release: float = 0.65         # close promptly at syllable boundaries; the pet also eases the pose
     gain: float = 1.0
     max_total: float = 1.15       # cap on the sum of weights
 
@@ -220,4 +220,6 @@ class StreamingLipSync:
     def frame_at(self, t: float) -> dict[str, float]:
         if not self.frames:
             return zero_mouth()
-        return self.frames[min(max(0, int(t * self.cfg.fps)), len(self.frames) - 1)]
+        # Analysis windows are centered, so use the nearest frame, not the previous one.
+        frame = int(t * self.cfg.fps + 0.5)
+        return self.frames[min(max(0, frame), len(self.frames) - 1)]

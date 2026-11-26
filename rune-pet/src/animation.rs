@@ -15,6 +15,7 @@ fn gesture(age: f32, start: f32, attack: f32, release: f32) -> f32 {
 #[derive(Clone, Copy, Default)]
 struct Accent {
     head: [f32; 3],
+    eye_yaw: f32,
     chest_pitch: f32,
     shoulder_lift: f32,
 }
@@ -24,16 +25,19 @@ impl Accent {
         for (angle, goal) in self.head.iter_mut().zip(target.head) {
             *angle += (goal - *angle) * amount;
         }
+        self.eye_yaw += (target.eye_yaw - self.eye_yaw) * amount;
         self.chest_pitch += (target.chest_pitch - self.chest_pitch) * amount;
         self.shoulder_lift += (target.shoulder_lift - self.shoulder_lift) * amount;
     }
 }
 
 fn idle_accent(age: f32, side: f32) -> Accent {
-    let glance = gesture(age, 0.9, 0.44, 0.88) - gesture(age, 7.0, 0.50, 1.05);
+    let glance = |time| gesture(time, 0.9, 0.44, 0.88) - gesture(time, 7.0, 0.50, 1.05);
+    let head = glance(age) * side;
     let sigh = gesture(age, 3.7, 0.80, 1.48);
     Accent {
-        head: [sigh * 0.058, glance * side * 0.13, glance * side * 0.080],
+        head: [sigh * 0.058, head * 0.13, head * 0.080],
+        eye_yaw: glance(age + 0.12) * side * 0.06,
         chest_pitch: -sigh * 0.045,
         shoulder_lift: sigh * 0.042,
     }
@@ -46,11 +50,13 @@ fn mood_accent(mood: Option<HarnessMood>, age: f32) -> Accent {
             head: [0.115 * beat, 0.0, -0.100 * beat],
             chest_pitch: 0.035 * beat,
             shoulder_lift: 0.045 * beat,
+            ..Accent::default()
         },
         Some(HarnessMood::Celebrate) => Accent {
             head: [-0.14 * beat, 0.0, 0.085 * beat],
             chest_pitch: -0.060 * beat,
             shoulder_lift: 0.075 * beat,
+            ..Accent::default()
         },
         Some(HarnessMood::Working | HarnessMood::Wave) => {
             let nod = beat + 0.65 * gesture(age, 0.72, 0.21, 0.31);
@@ -70,7 +76,7 @@ fn mood_posture(mood: Option<HarnessMood>) -> (Accent, [f32; 2]) {
         Some(HarnessMood::Sleep) => ([0.13, 0.0, -0.07], 0.07, -0.02, 0.0, 0.12),
         None => return (Accent::default(), [0.0; 2]),
     };
-    (Accent { head, chest_pitch, shoulder_lift }, [brows, softness])
+    (Accent { head, chest_pitch, shoulder_lift, ..Accent::default() }, [brows, softness])
 }
 
 // Asymmetric closure: quick downstroke, a very short hold, and slower reopening. A few
@@ -113,14 +119,14 @@ impl Default for AnimationLife {
 }
 
 impl AnimationLife {
-    pub(crate) fn step(&mut self, dt: f32, idle: bool, mood: Option<HarnessMood>, eyes_closed: bool) {
+    pub(crate) fn step(&mut self, dt: f32, idle: bool, mood: Option<HarnessMood>, suspend_blink: bool) {
         if mood != self.mood {
             self.mood = mood;
             self.mood_age = 0.0;
         }
         self.mood_age = (self.mood_age + dt).min(2.0);
-        if eyes_closed {
-            // Finish a blink already in flight while the sleep lid blend takes over.
+        if suspend_blink {
+            // Let a blink in flight finish; don't start another during sleep or speech.
             self.blink_age = (self.blink_age + dt).min(BLINK_END);
         } else {
             self.blink_age += dt;
@@ -130,7 +136,7 @@ impl AnimationLife {
                 self.blink_index = (self.blink_index + 1) % BLINK_GAPS.len();
             }
         }
-        let target = if idle && !eyes_closed {
+        let target = if idle && !suspend_blink {
             self.idle_age += dt;
             if self.idle_age >= 12.0 {
                 self.idle_age -= 12.0;
@@ -183,6 +189,7 @@ impl AnimationLife {
                 self.accent.head[2] + self.posture.head[2],
             ],
             "chest" => [self.accent.chest_pitch + self.posture.chest_pitch + 0.092 * compression - 0.028 * rebound, 0.0, 0.0],
+            "leftEye" | "rightEye" => [0.0, self.accent.eye_yaw, 0.0],
             "leftShoulder" => [0.0, 0.0, self.accent.shoulder_lift + self.posture.shoulder_lift],
             "rightShoulder" => [0.0, 0.0, -self.accent.shoulder_lift - self.posture.shoulder_lift],
             _ => [0.0; 3],

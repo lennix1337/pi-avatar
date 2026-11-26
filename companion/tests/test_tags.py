@@ -1,4 +1,15 @@
+import json
+from pathlib import Path
+
 from companion.brain.tags import parse_segment
+from companion.protocol import EMOTIONS
+
+
+def test_every_brain_emotion_tag_has_an_avatar_profile():
+    library = json.loads((Path(__file__).resolve().parents[2] / "poses.json").read_text(encoding="utf-8"))
+    assert set(library["emotions"]) == set(EMOTIONS)
+    for name in EMOTIONS:
+        assert parse_segment(f"[{name}] Oi").emotion == name
 
 
 def test_emotion_and_gesture_are_extracted_and_stripped():

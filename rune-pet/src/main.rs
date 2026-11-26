@@ -44,7 +44,7 @@ use crate::pet_state::{
     PetStateMachine, Rect, WindowCandidate, floor_window_y, scaled_avatar_size, scaled_px,
 };
 pub use crate::poses::EvaluatedPose;
-use crate::poses::{BlenderInput, PoseBlender, PoseMap, load_poses};
+use crate::poses::{BlenderInput, PoseBlender, PoseLibrary, load_pose_library};
 use crate::protocol::PokeKind;
 use crate::renderer::{RenderMetrics, VrmCompositor};
 use crate::vrm::VrmModel;
@@ -107,7 +107,7 @@ pub struct PetAppState {
 
 impl PetAppState {
     fn new(
-        poses: PoseMap,
+        library: PoseLibrary,
         work_area: Rect,
         scale: f64,
         forced: ForcedBehavior,
@@ -118,8 +118,8 @@ impl PetAppState {
         pet.set_forced_behavior(forced);
         pet.set_prefer_sit_first(sit_first);
         let snap = pet.snapshot();
-        let conv = Conversation::new(&poses);
-        let blender = PoseBlender::new(poses, snap.pose, snap.expression, snap.facing);
+        let conv = Conversation::new(&library.poses, library.emotions);
+        let blender = PoseBlender::new(library.poses, snap.pose, snap.expression, snap.facing);
 
         let mut harness = HarnessWatcher::new(state_file);
         let _ = harness.poll();
@@ -1145,14 +1145,14 @@ fn scene_delight_pat(s: &mut PetAppState) {
 
 fn init_state() -> PetAppState {
     let avatar_root = find_avatar_root();
-    let poses = load_poses(&avatar_root.join("poses.json"))
-        .expect("failed to load labs/avatar/poses.json");
+    let library = load_pose_library(&avatar_root.join("poses.json"))
+        .expect("failed to load avatar poses.json");
     let (work_area, scale) = win32::primary_work_area();
     let cli = CLI.get();
     let forced = cli.map(|c| c.forced_behavior).unwrap_or(ForcedBehavior::Auto);
     let sit_first = cli.is_some_and(|c| c.sit_first);
     let state_file = cli.and_then(|c| c.state_file.clone());
-    PetAppState::new(poses, work_area, scale, forced, sit_first, state_file)
+    PetAppState::new(library, work_area, scale, forced, sit_first, state_file)
 }
 
 fn main() {

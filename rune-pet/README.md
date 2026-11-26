@@ -58,8 +58,9 @@ python scripts\fake_companion.py emit > x.jsonl  # gera o fluxo de replay
 pwsh scripts\measure-companion.ps1              # FPS/RAM: ocioso, sem companion, replay de 20 s e replay + cauda
 ```
 
-Lábios (aa/ih/ou/ee/oh) com ataque/soltura e queda a zero em 150 ms sem `mouth`; emoções (inclusive
-smug, teasing, embarrassed, bored, excited, confused) viram mistura de expressões VRM + postura sutil;
+Lábios (aa/ih/ou/ee/oh) animados pelos visemas do PCM, sincronizados ao relógio de saída. Sem
+`mouth`, começam a fechar após 150 ms. Os perfis em `poses.json` → `emotions` combinam pesos
+VRM (`expr`: happy, angry, sad, relaxed, surprised), pálpebras e postura sutil;
 gestos são animações aditivas curtas; a fala sobrepõe os humores do harness e aparece como legenda
 no balão (quebra de linha, até 3 linhas visíveis, some ~1,5 s após `end`). Durante a conversa o
 pet fica parado; o loop só é acordado pelo companion quando a conversa está inativa, porque o Rune
@@ -76,6 +77,7 @@ target\release\pi-avatar.exe --measure-secs 25 > stats.json
 No modo ocioso, o pet alterna olhares laterais e pequenos suspiros. Ao aproximar o cursor,
 os olhos reagem primeiro e a cabeça acompanha; carícias lentas também contam em telas com DPI alto.
 O piscar varia de ritmo, às vezes vem em dobro, e dá lugar aos olhos fechados no sono.
+Na fala, os olhares e piscadas ociosos cedem aos gestos e expressões da conversa.
 Ao mudar o humor do harness, o pet faz um gesto breve: abaixa a cabeça com o CI vermelho,
 se anima com um PR mesclado ou acena com a cabeça quando está trabalhando ou precisa da sua atenção.
 
