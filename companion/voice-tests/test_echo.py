@@ -151,10 +151,65 @@ def test_without_the_gate_her_echo_would_trigger_it():
     assert starts, "echo was not loud enough to matter; the test above proves nothing"
 
 
-def test_user_talking_over_her_triggers_barge_in_and_stops_playback_fast():
+def test_user_talking_over_her_triggers_barge_in_and_stops_playback_fast(record_property):
     starts, got, t_speak, sink = scenario(user_at=1.0)
     assert len(starts) == 1
-    assert 1.0 - 0.3 <= starts[0] - t_speak + 0.3 <= 1.0 + 0.6      # fires within ~0.6 s of the user starting
+    stop_ms = (starts[0] - t_speak - 0.7) * 1000  # callback runs after Voice.cancel() clears the sink
+    record_property("user_onset_to_virtual_sink_clear_ms", round(stop_ms, 2))
+    assert 0 <= stop_ms < 250
     assert sink.buffered_s == 0.0
     assert sink.written_s < 1.3                                      # she was cut off, not finished
     assert len(got) == 1 and got[0].text == "oi"
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+async def test_loud_delayed_echo_never_reaches_stt_even_in_preroll(overlap):
+    from companion.voice.sink import BufferedSink
+    from companion.voice.stt import SttBackend
+
+    rng = np.random.default_rng(42)
+    dry = rng.uniform(-0.07, 0.07, FRAME * 14).astype(np.float32)
+    user = np.full(FRAME * 9, 0.055, np.float32)
+    silent = np.zeros(FRAME, np.float32)
+    sink = BufferedSink(MIC_SR)
+    sink.write(dry)
+    calls = []
+    starts = []
+
+    class SpyStt(SttBackend):
+        def transcribe(self, audio):
+            calls.append(audio)
+            return "usuário"
+
+    class LoopbackMic(ArrayMic):
+        async def frames(self):
+            for i in range(17):
+                sink.take(FRAME)
+                # Echo starts 64 ms after output and is louder than the reference. No prior calibration.
+                k = (i - 2) * FRAME
+                frame = 2.0 * dry[k:k + FRAME] if 0 <= k < dry.size else silent.copy()
+                if overlap and 5 <= i < 14:
+                    frame += user[(i - 5) * FRAME:(i - 4) * FRAME]
+                yield frame
+            for _ in range(20):
+                yield silent
+
+    class LoopbackVoice(Voice):
+        @property
+        def speaking(self):
+            return sink.buffered_s > 0
+
+    config = {"echo": {"init_coupling": 0.05, "calib_ms": 0},
+              "listen": {"barge_in_cancel": False}}
+    voice = LoopbackVoice(config, on_speech_start=lambda: starts.append(True),
+                          mic=LoopbackMic(np.empty(0)), sink=sink, tts=FakeTts(), stt=SpyStt(),
+                          vad=lambda frame: float(rms(frame) > 0.03))
+    try:
+        await voice.warmup()
+        got = [u async for u in voice.listen()]
+    finally:
+        await voice.close()
+    assert len(starts) == len(got) == len(calls) == int(overlap)
+    if overlap:
+        assert np.max(np.abs(calls[0])) < 0.08  # the 0.14 echo peaks never enter STT, even before onset
+        assert np.count_nonzero(calls[0] > 0.03) >= user.size * 0.9

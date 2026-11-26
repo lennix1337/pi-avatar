@@ -8,7 +8,7 @@ import sys
 import time
 from typing import AsyncIterator
 
-from .voiceapi import MouthFn, Utterance, VoiceIO
+from .voiceapi import FirstAudioFn, MouthFn, Utterance, VoiceIO
 
 CPS = 16.0  # caracteres por segundo da "fala" simulada
 
@@ -29,7 +29,7 @@ class FakeVoice(VoiceIO):
             return
         if self.on_speech_start:
             self.on_speech_start()
-        now = time.monotonic()
+        now = time.time()
         self._queue.put_nowait(Utterance(text, now, now))
 
     def finish(self) -> None:
@@ -42,7 +42,8 @@ class FakeVoice(VoiceIO):
                 return
             yield item
 
-    async def speak(self, text: str, emotion: str, on_mouth: MouthFn) -> None:
+    async def speak(self, text: str, emotion: str, on_mouth: MouthFn,
+                    on_first_audio: FirstAudioFn | None = None) -> None:
         self.spoken.append((text, emotion))
         self._speaking.add(asyncio.current_task())
         try:

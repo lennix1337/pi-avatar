@@ -18,7 +18,7 @@ from .brain.memory import Memory
 from .brain.tags import Segment, parse_segment
 from .config import Config
 from .server import PetServer
-from .voiceapi import Utterance, VoiceIO
+from .voiceapi import FirstAudioFn, Utterance, VoiceIO
 
 log = logging.getLogger("companion")
 
@@ -176,7 +176,7 @@ class Companion:
             context.append("ele estava no meio de uma fala, você ainda não tinha respondido, e ele emendou; responda ao conjunto")
             self._pending_user = None
         self._last_user_wall = time.time()
-        await self._start_turn("user", persona.user_turn(text, context), user_text=text)
+        await self._start_turn("user", persona.user_turn(text, context), user_text=text, ended_at=utt.ended_at)
 
     # --- pet ----------------------------------------------------------
     def _on_pet_message(self, msg: dict) -> None:
@@ -262,9 +262,10 @@ class Companion:
     async def _cancel_turn(self) -> None:
         await self._join_turn()
 
-    async def _start_turn(self, kind: str, prompt: str, user_text: str | None = None, trigger: Trigger | None = None) -> None:
+    async def _start_turn(self, kind: str, prompt: str, user_text: str | None = None,
+                          trigger: Trigger | None = None, ended_at: float = 0.0) -> None:
         await self._wait_turn()
-        self._turn = asyncio.create_task(self._run_turn(kind, prompt, user_text, trigger))
+        self._turn = asyncio.create_task(self._run_turn(kind, prompt, user_text, trigger, ended_at))
 
     async def _prepare_session(self, prompt: str) -> str:
         if self._session_turns >= self.cfg.reset_session_after:
@@ -279,8 +280,15 @@ class Companion:
         self._session_turns += 1
         return prompt
 
-    async def _run_turn(self, kind: str, prompt: str, user_text: str | None, trigger: Trigger | None) -> None:
+    async def _run_turn(self, kind: str, prompt: str, user_text: str | None, trigger: Trigger | None,
+                        ended_at: float) -> None:
         t0 = self.clock()
+        timing = {"kind": kind}
+
+        def first_audio(at: float) -> None:
+            timing.setdefault("end_to_first_audio_s", at - ended_at)
+
+        on_audio = first_audio if ended_at else None
         self._said, self._partial = [], ""
         self._chain, self._last_id = [], None
         self._set_state(listening=False, thinking=True, speaking=False)
@@ -292,7 +300,6 @@ class Companion:
             prompt = await self._prepare_session(prompt)
             gen = asyncio.create_task(self._generate(prompt, queue, trigger is not None))
             filler_wait = self.cfg.filler_after_s if kind == "user" else None
-            first_at: float | None = None
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), filler_wait)
@@ -309,10 +316,10 @@ class Companion:
                     if not trigger and not self._said:
                         await self._say_segment(parse_segment(self.rng.choice(FAILURES)))
                     break
-                if first_at is None:
-                    first_at = self.clock()
-                    self.turn_log.append({"kind": kind, "first_sentence_s": first_at - t0})
-                await self._say_segment(value)
+                if value.text and "first_sentence_s" not in timing:
+                    timing["first_sentence_s"] = self.clock() - t0
+                    self.turn_log.append(timing)
+                await self._say_segment(value, on_audio)
             await asyncio.gather(*self._chain)
         except asyncio.CancelledError:
             cancelled = True
@@ -371,7 +378,7 @@ class Companion:
         except Exception:
             log.exception("o filler falhou")
 
-    async def _say_segment(self, seg: Segment) -> None:
+    async def _say_segment(self, seg: Segment, on_audio: FirstAudioFn | None = None) -> None:
         """Agenda a fala da frase: a síntese da próxima começa enquanto a anterior toca (no máximo uma na fila)."""
         if len(self._chain) >= 2:
             await self._chain[-2]
@@ -379,7 +386,11 @@ class Companion:
         self._emotion = emotion
         speak = None
         if seg.text:
-            speak = asyncio.ensure_future(self.voice.speak(seg.text, emotion, self._on_mouth))
+            if on_audio is None:
+                coro = self.voice.speak(seg.text, emotion, self._on_mouth)
+            else:
+                coro = self.voice.speak(seg.text, emotion, self._on_mouth, on_first_audio=on_audio)
+            speak = asyncio.ensure_future(coro)
         prev = self._chain[-1] if self._chain else None
         self._chain.append(asyncio.create_task(self._present(prev, seg, emotion, speak)))
 

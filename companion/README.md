@@ -72,6 +72,23 @@ O orquestrador conversa com a voz por `voiceapi.VoiceIO` (`listen()`, `speak(tex
 
 ## Medidas
 
+### Voz offline: fim da fala → primeiro PCM
+
+Em `companion/`, rode o mesmo script contra a revisão base e a versão atual, na mesma máquina:
+
+```sh
+base=$(mktemp -d)
+git archive df1e36e:companion | tar -x -C "$base"
+PI_AVATAR_BENCH_SOURCE="$base" uv run --with numpy --with scipy --with soundfile python scripts/bench_voice_latency.py --save "$base/before.json"
+uv run --with numpy --with scipy --with soundfile python scripts/bench_voice_latency.py --before "$base/before.json"
+```
+
+O replay usa mic simulado em tempo real e STT/LLM/TTS falsos; mede do último frame de fala até o primeiro PCM enfileirado, sem contar filler nem o atraso físico do alto-falante. O app registra `end_to_first_audio_s` para o primeiro PCM de uma frase da resposta. `!` e `?` fecham a primeira frase mesmo se o próximo token ainda não chegou; o ponto simples ainda espera contexto.
+
+Os testes de voz registram `user_onset_to_virtual_sink_clear_ms` e `cancel_to_dac_abort_ms` no JUnit (`-o junit_family=legacy --junitxml=/tmp/voice.xml`). O modo `auto` usa o PCM recente da saída para subtrair cópias atrasadas antes do VAD e da transcrição. Não substitui a validação com microfone e alto-falante reais; salas e dispositivos podem alterar ou atrasar o eco.
+
+### Persona e Pi RPC
+
 `uv run python scripts/eval_persona.py` roda 15 turnos em pt-BR sem Pi, áudio ou rede e imprime o transcrito. O replay checa brevidade, memória após reinício, repetição e identidade com respostas simuladas; não avalia a qualidade do modelo real.
 
 `uv run python scripts/bench.py --models anthropic/claude-haiku-5-5 ... --turns 13` mede, com o Pi real, o tempo do fim do texto até a primeira frase pronta. `scripts/sample_conversation.py` gera o transcrito de `docs/`.

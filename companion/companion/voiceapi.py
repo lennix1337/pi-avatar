@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable
 
 MouthFn = Callable[[dict], None]
+FirstAudioFn = Callable[[float], None]  # wall-clock time when the first PCM was queued
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,9 @@ class VoiceIO(ABC):
         """Falas dele já transcritas, uma por vez."""
 
     @abstractmethod
-    async def speak(self, text: str, emotion: str, on_mouth: MouthFn) -> None:
-        """Fala `text` e chama `on_mouth({"aa":..})` ~30 Hz enquanto toca. Cancelável (CancelledError)."""
+    async def speak(self, text: str, emotion: str, on_mouth: MouthFn,
+                    on_first_audio: FirstAudioFn | None = None) -> None:
+        """Fala `text` e chama `on_mouth` ~30 Hz; `on_first_audio` só é chamado quando há PCM."""
 
     @abstractmethod
     def cancel(self) -> None:

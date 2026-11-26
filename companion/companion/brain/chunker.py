@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-# fim de frase: pontuação final seguida de espaço, quebra de linha ou o começo de uma etiqueta
-_END = re.compile(r"[.!?…]+[\"')\]]*(?=\s|\[)|\n+")
+# !/? já fecham uma frase no fim de um token; ponto espera contexto (abreviações, decimais).
+_END = re.compile(r"[.!?…]+[\"')\]]*(?=\s|\[)|[!?]+[\"')\]]*$|\n+")
 _TAG_ONLY = re.compile(r"\[[^\[\]]*\]")
 MIN_CHARS = 10   # frase mais curta que isso (sem etiquetas) espera a próxima, p.ex. "Hm." + "Então..."
 MAX_CHARS = 160  # sem pontuação por tanto tempo: corta numa vírgula

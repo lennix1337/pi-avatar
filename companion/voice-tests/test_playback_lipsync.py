@@ -65,3 +65,50 @@ def test_dac_padding_does_not_advance_the_viseme_timeline(output):
         actual, playing = sink.playback()
         assert actual == pytest.approx(pos)
         assert playing == audible
+
+
+async def test_barge_in_aborts_dac_queue_without_blocking_the_loop(monkeypatch, record_property):
+    import asyncio
+    import threading
+    import time
+
+    loop = asyncio.get_running_loop()
+    aborting = asyncio.Event()
+    release = threading.Event()
+    stopped = []
+    stream = SimpleNamespace(latency=0.3, time=0.0, active=True)
+
+    def abort():
+        loop.call_soon_threadsafe(aborting.set)
+        assert release.wait(1), "PortAudio abort blocked the event loop"
+        stream.active = False
+        stopped.append(time.perf_counter())
+
+    stream.abort = abort
+    stream.start = lambda: setattr(stream, "active", True)
+    stream.stop = stream.close = lambda: None
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(OutputStream=lambda **_: stream))
+    sink = SoundDeviceSink(16000)
+    sink.write(np.full(3200, 0.25, np.float32))
+    sink.take(3200, dac_start=0.01)
+    stream.time = 0.02
+    assert sink.playback()[1]
+    # This is the path Speaker.cancel uses; no software PCM remains, but DAC still has 190 ms.
+    t0 = time.perf_counter()
+    sink.clear()
+    try:
+        await asyncio.wait_for(aborting.wait(), 0.1)
+        assert not sink.playback()[1]
+    finally:
+        release.set()
+    await sink.prepare()
+    stop_ms = (stopped[0] - t0) * 1000
+    record_property("cancel_to_dac_abort_ms", round(stop_ms, 2))
+    assert stop_ms < 100
+    assert stream.active
+    # New playback must not be displaced or preceded by the discarded schedule.
+    sink.write(np.full(320, 0.1, np.float32))
+    assert sink.take(320, dac_start=0.03) == pytest.approx(np.full(320, 0.1))
+    stream.time = 0.035
+    assert sink.playback() == (pytest.approx(0.205), True)
+    await sink.shutdown()

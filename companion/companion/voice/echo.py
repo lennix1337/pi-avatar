@@ -1,16 +1,13 @@
-"""Echo protection: decide whether mic energy while she is talking can be the user.
-
-Her own voice leaks from the speakers into the mic. We learn how much (`coupling`, mic
-level / playback level) from frames we judge to be echo, and treat the mic as the user only
-when it clearly exceeds that expectation. With a headset the coupling collapses to ~0 and
-the gate reduces to a plain loudness floor.
-"""
+"""Remove correlated playback from mic PCM; fall back to a learned energy gate without PCM."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .audio import dbfs
+import numpy as np
+
+from .audio import MIC_SR, dbfs, rms
+from .lipsync import resample
 
 HOLD_FRAMES = 10   # once the user is recognised, stay open through syllable-level dips (~320 ms)
 
@@ -88,6 +85,25 @@ class EchoGate:
         if ref_rms > 1e-4 and mic_rms <= 1.3 * expected + 1e-4:
             self.coupling += 0.2 * (mic_rms / ref_rms - self.coupling)
         return False
+
+    def clean(self, frame: np.ndarray, reference: np.ndarray, rate: int) -> np.ndarray:
+        """Subtract correlated playback even when its gain/delay differs from the RMS prediction."""
+        ref = resample(reference, rate, MIC_SR)
+        if ref.size < frame.size or rms(frame) < 1e-4:
+            return frame
+        n = frame.size
+        cross = np.correlate(ref, frame, mode="valid")
+        power = np.cumsum(np.square(ref), dtype=np.float64)
+        power = power[n - 1:] - np.r_[0.0, power[:-n]]
+        score = cross ** 2 / np.maximum(power, 1e-8)
+        i = int(np.argmax(score))
+        if score[i] < 0.2 * float(np.dot(frame, frame)):
+            return frame
+        echo = ref[i:i + n] * (cross[i] / power[i])
+        residual = frame - echo
+        if rms(residual) < max(10 ** (self.cfg.floor_dbfs / 20), 0.15 * rms(echo)):
+            return np.zeros_like(frame)
+        return residual
 
     def vad_threshold(self, base: float) -> float:
         return max(base, self.cfg.speaking_threshold) if self.active and self.cfg.mode == "auto" else base

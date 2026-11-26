@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections import deque
@@ -23,6 +24,8 @@ class BufferedSink:
         self._rms_log: deque[tuple[int, float]] = deque(maxlen=400)  # (end sample, rms) of drained blocks
         self._scheduled: deque[tuple[float, int, int]] = deque()  # (DAC start, first sample, end sample)
         self._played = 0
+        self._echo: deque[tuple[float, np.ndarray]] = deque()
+        self._echo_at = float("-inf")
 
     # -- producer side ------------------------------------------------
     def write(self, samples: np.ndarray) -> float:
@@ -61,8 +64,14 @@ class BufferedSink:
             if got and dac_start is not None:
                 self._scheduled.append((dac_start, self._taken, self._taken + got))
             self._taken += got
+            now = time.monotonic()
             if got:
                 self._rms_log.append((self._taken, float(np.sqrt(np.mean(out[:got] ** 2)))))
+                self._echo_at = now
+            if now - self._echo_at < 0.5:
+                self._echo.append((now, out))
+            while self._echo and now - self._echo[0][0] >= 0.5:
+                self._echo.popleft()
         return out
 
     # -- observers --------------------------------------------------------
@@ -89,10 +98,19 @@ class BufferedSink:
             vals = [r for end, r in self._rms_log if end >= lo]
         return max(vals) if vals else 0.0
 
-    def start(self) -> None:
+    def echo_reference(self, window_s: float) -> np.ndarray | None:
+        """Recent PCM handed to the DAC, including padding needed to align delayed echo."""
+        cutoff = time.monotonic() - window_s
+        with self._lock:
+            if self._echo_at < cutoff:
+                return None
+            blocks = [x for t, x in self._echo if t >= cutoff]
+        return np.concatenate(blocks)[-int(window_s * self.sample_rate):] if blocks else None
+
+    async def prepare(self) -> None:
         pass
 
-    def close(self) -> None:
+    async def shutdown(self) -> None:
         pass
 
 
@@ -131,6 +149,10 @@ class VirtualSink(BufferedSink):
         self._drain()
         return super().recent_rms(window_s)
 
+    def echo_reference(self, window_s: float) -> np.ndarray | None:
+        self._drain()
+        return super().echo_reference(window_s)
+
     def write(self, samples: np.ndarray) -> float:
         if self._buffered == 0:
             self._drain()
@@ -145,7 +167,7 @@ class SoundDeviceSink(BufferedSink):
         super().__init__(sample_rate)
         import sounddevice as sd
 
-        self._sd = sd
+        self._device_task: asyncio.Task | None = None
         self._stream = sd.OutputStream(
             samplerate=sample_rate, channels=1, dtype="float32", device=device,
             blocksize=int(sample_rate * block_ms / 1000), callback=self._callback, latency="low")
@@ -172,13 +194,31 @@ class SoundDeviceSink(BufferedSink):
     def position(self) -> float:
         return self.playback()[0]
 
-    def start(self) -> None:
-        if not self._stream.active:
-            self._stream.start()
+    def clear(self) -> None:
+        super().clear()
+        with self._lock:
+            pending_dac = bool(self._scheduled)
+            self._scheduled.clear()
+            self._played = self._taken
+        if pending_dac:
+            self._device_task = asyncio.create_task(asyncio.to_thread(self._abort_and_start))
 
-    def close(self) -> None:
-        self._stream.stop()
-        self._stream.close()
+    def _abort_and_start(self) -> None:
+        self._stream.abort()
+        self._stream.start()
+
+    async def prepare(self) -> None:
+        # Keep device operations alive across cancellation of an individual sentence.
+        if self._device_task is None:
+            self._device_task = asyncio.create_task(asyncio.to_thread(self._stream.start))
+        await asyncio.shield(self._device_task)
+
+    async def shutdown(self) -> None:
+        try:
+            if self._device_task is not None:
+                await asyncio.shield(self._device_task)
+        finally:
+            await asyncio.to_thread(self._stream.close)
 
 
 def list_devices() -> list[dict]:
