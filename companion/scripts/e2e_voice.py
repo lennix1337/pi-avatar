@@ -119,7 +119,7 @@ class Probe(Voice):
             self._sink.turn = len(self.utts)
             yield utt
 
-    async def speak(self, text, emotion, on_mouth):
+    async def speak(self, text, emotion, on_mouth, on_first_audio=None):
         call = {"turn": len(self.utts), "text": text, "emotion": emotion, "t_submit": time.perf_counter(),
                 "t_mouth": None, "t_done": None, "filler": text in FILLERS}
         self.calls.append(call)
@@ -130,7 +130,7 @@ class Probe(Voice):
             on_mouth(w)
 
         try:
-            await super().speak(text, emotion, mouth)
+            await super().speak(text, emotion, mouth, on_first_audio=on_first_audio)
         finally:
             call["t_done"] = time.perf_counter()
 

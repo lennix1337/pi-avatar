@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from ..voiceapi import MouthFn, Utterance, VoiceIO
+from ..voiceapi import FirstAudioFn, MouthFn, Utterance, VoiceIO
 from . import config as _config
 from .audio import FRAME, MIC_SR, rms
 from .echo import EchoConfig, EchoGate
@@ -74,15 +74,17 @@ class Voice(VoiceIO):
                     if out.get("backend") == "virtual":
                         self._sink = VirtualSink(self._tts.sample_rate, speed=float(out.get("speed", 1.0)))
                     else:
-                        self._sink = SoundDeviceSink(self._tts.sample_rate, out.get("device"), out.get("block_ms", 20))
+                        self._sink = await loop.run_in_executor(
+                            self._pool, SoundDeviceSink, self._tts.sample_rate, out.get("device"), out.get("block_ms", 20))
                 lip = self.cfg["lipsync"]
                 self._speaker = Speaker(self._tts, self._sink, LipSyncConfig(fps=lip["fps"], gain=lip["gain"]))
             return self._speaker
 
-    async def speak(self, text: str, emotion: str, on_mouth: MouthFn) -> None:
+    async def speak(self, text: str, emotion: str, on_mouth: MouthFn,
+                    on_first_audio: FirstAudioFn | None = None) -> None:
         """Play one sentence; returns when it has been heard. Queue several calls to pipeline them."""
         sp = await self._ensure_speaker()
-        await sp.speak(text, emotion, on_mouth)
+        await sp.speak(text, emotion, on_mouth, on_first_audio=on_first_audio)
 
     def cancel(self) -> None:
         """Barge-in: stop playback now and drop queued speech."""
@@ -120,7 +122,11 @@ class Voice(VoiceIO):
 
     async def warmup(self) -> None:
         """Load the models now instead of at first use."""
-        await asyncio.gather(self._ensure_speaker(), self._ensure_stt())
+        async def prepare_output() -> None:
+            speaker = await self._ensure_speaker()
+            await speaker.sink.prepare()
+
+        await asyncio.gather(prepare_output(), self._ensure_stt())
 
     def _fire_start(self) -> None:
         if self.cfg["listen"].get("barge_in_cancel", True) and self.speaking:
@@ -148,6 +154,7 @@ class Voice(VoiceIO):
                 k += 1
                 t = k * FRAME_S                    # stream clock, end of this frame
                 events = []
+                frame, has_reference = self._clean_mic_frame(frame)
                 while ptt and not self._ptt_events.empty():
                     down = self._ptt_events.get_nowait()
                     if down and not self._ptt_down:
@@ -160,10 +167,7 @@ class Voice(VoiceIO):
                     if self._ptt_down:
                         seg.add(frame)
                 else:
-                    ref = self._speaker_ref()
-                    self.gate.note_playback(t, self.speaking)
-                    ok = self.gate.allow(rms(frame), ref)
-                    p = vad(frame) if ok else 0.0
+                    frame, p = self._vad_frame(frame, vad, t, has_reference)
                     events += seg.push(frame, p, t, self.gate.vad_threshold(threshold))
                 for kind, val in events:
                     if kind == "start":
@@ -175,6 +179,25 @@ class Voice(VoiceIO):
                 if kind == "end":
                     await self._segments.put((val, mic.t0))
             await self._segments.put(None)
+
+    def _clean_mic_frame(self, frame: np.ndarray) -> tuple[np.ndarray, bool]:
+        if self._sink is not None and self.gate.cfg.mode != "off":
+            # A wider search can mistake an unrelated, similar-sounding syllable for echo.
+            ref = self._sink.echo_reference(0.125 + self._sink.latency_s)
+            if ref is not None:
+                return self.gate.clean(frame, ref, self._sink.sample_rate), True
+        return frame, False
+
+    def _vad_frame(self, frame: np.ndarray, vad, t: float, has_reference: bool) -> tuple[np.ndarray, float]:
+        self.gate.note_playback(t, self.speaking)
+        level = rms(frame)
+        if has_reference and self.gate.cfg.mode == "auto":
+            # PCM evidence replaces the energy gate and its extra onset/calibration windows.
+            ok = level >= 10 ** (self.gate.cfg.floor_dbfs / 20)
+        else:
+            ok = self.gate.allow(level, self._speaker_ref())
+        # A rejected frame must not leak into STT via the VAD's pre-roll.
+        return (frame, vad(frame)) if ok else (np.zeros_like(frame), 0.0)
 
     def _speaker_ref(self) -> float:
         return self._sink.recent_rms() if self._sink is not None and self._speaker is not None else 0.0

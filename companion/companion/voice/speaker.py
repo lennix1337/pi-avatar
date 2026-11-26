@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ..voiceapi import FirstAudioFn
 from .lipsync import LipSyncConfig, StreamingLipSync, resample, zero_mouth
 from .sink import BufferedSink
 from .tts.base import TtsBackend
@@ -32,6 +33,7 @@ class _Item:
     on_mouth: MouthCb
     done: asyncio.Future
     lip: StreamingLipSync
+    on_first_audio: FirstAudioFn | None = None
     start: float | None = None        # offset on the sink timeline of its first sample
     end: float = 0.0                  # offset of the end of what has been written
     synth_done: bool = False
@@ -60,13 +62,21 @@ class Speaker:
     def speaking(self) -> bool:
         return bool(self._items) or self.sink.buffered_s > 0
 
-    async def speak(self, text: str, emotion: str, on_mouth: MouthCb) -> None:
+    async def speak(self, text: str, emotion: str, on_mouth: MouthCb,
+                    on_first_audio: FirstAudioFn | None = None) -> None:
         text = text.strip()
         if not text or self._closed:
             return
+        await self.sink.prepare()
+        if self._closed:
+            return
         loop = asyncio.get_running_loop()
+        callback = None
+        if on_first_audio is not None:
+            def callback(at: float) -> None:
+                loop.call_soon_threadsafe(on_first_audio, at)
         item = _Item(text, emotion, on_mouth, loop.create_future(),
-                     StreamingLipSync(self.sink.sample_rate, self.lip_cfg))
+                     StreamingLipSync(self.sink.sample_rate, self.lip_cfg), callback)
         with self._lock:
             self._items.append(item)
             if self._worker is None:
@@ -74,7 +84,6 @@ class Speaker:
                 self._worker.start()
             self._jobs.put(item)
         if self._ticker is None or self._ticker.done():
-            self.sink.start()
             self._ticker = loop.create_task(self._tick())
         await item.done
         if item.error is not None:
@@ -109,7 +118,7 @@ class Speaker:
                 await self._ticker
             except asyncio.CancelledError:
                 pass
-        self.sink.close()
+        await self.sink.shutdown()
 
     # -- worker thread ----------------------------------------------------
     def _work(self) -> None:
@@ -136,6 +145,8 @@ class Speaker:
                         if item.start is None:
                             item.start = off
                             item.first_audio_s = time.perf_counter() - item.t_submit
+                            if item.on_first_audio is not None:
+                                item.on_first_audio(time.time())
                         item.end = off + x.size / self.sink.sample_rate
                     item.lip.feed(x)
             except Exception as e:  # handed to the awaiting speak()

@@ -35,7 +35,7 @@ class SlowVoice(FakeVoice):
         self.dur = dur
         self.cancelled = 0
 
-    async def speak(self, text, emotion, on_mouth):
+    async def speak(self, text, emotion, on_mouth, on_first_audio=None):
         self.spoken.append((text, emotion))
         self._speaking.add(asyncio.current_task())
         try:
@@ -343,3 +343,30 @@ async def test_unsolicited_model_error_does_not_ask_user_to_repeat(tmp_path):
     await comp.initiative_tick()
     await settle(comp)
     assert not voice.spoken
+
+
+async def test_tts_starts_at_complete_question_token_and_records_first_pcm(tmp_path):
+    pcm = asyncio.Event()
+    after_question = asyncio.Event()
+
+    class PausedLLM(FakeLLM):
+        async def stream(self, prompt):
+            yield "Tá me ouvindo?"
+            await after_question.wait()
+            yield " Vamos continuar."
+
+    class PcmVoice(SlowVoice):
+        async def speak(self, text, emotion, on_mouth, on_first_audio=None):
+            if on_first_audio is not None:
+                on_first_audio(100.25)
+            pcm.set()
+            await super().speak(text, emotion, on_mouth)
+
+    comp, *_ = build(tmp_path, llm=PausedLLM(), voice=PcmVoice(), filler_after_s=10)
+    await comp.on_utterance(Utterance("oi", started_at=99, ended_at=100))
+    try:
+        await asyncio.wait_for(pcm.wait(), 0.5)
+        assert comp.turn_log[0]["end_to_first_audio_s"] == 0.25
+    finally:
+        after_question.set()
+        await comp._wait_turn()
