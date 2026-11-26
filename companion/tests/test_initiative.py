@@ -12,12 +12,15 @@ def make(**kw):
     return Initiative(cfg, random.Random(1))
 
 
-def test_first_check_is_a_greeting_then_silence_waits_the_interval():
+def test_first_check_is_a_greeting_then_silence_waits_between_attempts_even_without_speech():
     ini = make()
     assert ini.check(0, NOON, DAY).kind == "greeting"
     assert ini.check(50, NOON, DAY) is None
     trig = ini.check(101, NOON, DAY)
     assert trig and trig.kind == "silence"
+    assert ini.check(102, NOON, DAY) is None
+    assert ini.check(200, NOON, DAY) is None
+    assert ini.check(201, NOON, DAY).kind == "silence"
 
 
 def test_each_unanswered_initiative_doubles_the_wait():
@@ -121,3 +124,13 @@ def test_read_harness_matches_the_pet_json(tmp_path):
     assert read_harness(p) == Harness(ci_red=True, merged=False, workers=3, waiting_operator=True, idle_minutes=4.5)
     p.write_text("lixo")
     assert read_harness(p) is None and read_harness(tmp_path / "nope.json") is None and read_harness(None) is None
+
+
+def test_silence_rotates_its_angle_even_after_user_activity():
+    ini = make()
+    ini.check(0, NOON, DAY)
+    reasons = []
+    for now in (100, 201, 302):
+        reasons.append(ini.check(now, NOON, DAY).reason)
+        ini.on_user_activity(now + 1)
+    assert len(set(reasons)) == 3

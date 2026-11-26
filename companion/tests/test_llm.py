@@ -85,3 +85,15 @@ async def test_complete_starts_a_fresh_session_each_time(tmp_path):
         assert "Eco 3" in await llm.complete("b")
     finally:
         await llm.close()
+
+
+async def test_fake_llm_exposes_only_current_session_prompts_to_replay():
+    from companion.brain.llm import FakeLLM
+
+    llm = FakeLLM(lambda _: str(len(llm.session_prompts)))
+    assert "".join([s async for s in llm.stream("um")]) == "1"
+    assert "".join([s async for s in llm.stream("dois")]) == "2"
+    await llm.new_session()
+    assert "".join([s async for s in llm.stream("três")]) == "1"
+    assert llm.session_prompts == ["três"]
+    assert llm.prompts == ["um", "dois", "três"]

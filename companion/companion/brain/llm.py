@@ -232,6 +232,7 @@ class FakeLLM(LLM):
         self.replies = replies if replies is not None else ["[smug] Tá, fingi que entendi. Agora me conta o resto."]
         self.first_delay, self.chunk_delay, self.chunk_size = first_delay, chunk_delay, chunk_size
         self.prompts: list[str] = []
+        self._session_start = 0
         self.sessions = 1
         self.aborted = 0
         self.completions: list[str] = []
@@ -245,6 +246,12 @@ class FakeLLM(LLM):
 
     async def new_session(self) -> None:
         self.sessions += 1
+        self._session_start = len(self.prompts)
+
+    @property
+    def session_prompts(self) -> list[str]:
+        """Apenas o contexto disponível desde o último reset, para replays dependentes da memória."""
+        return self.prompts[self._session_start:]
 
     async def complete(self, prompt: str) -> str:
         self.completions.append(prompt)

@@ -306,3 +306,40 @@ async def test_the_filler_does_not_hold_back_the_first_real_sentence(tmp_path):
     assert events.index(("submit", "Primeira frase inteira.")) < events.index(("end", filler))
     assert [m["text"] for m in sink.of("say")] == [filler, "Primeira frase inteira.", "Segunda frase inteira."]
     assert sink.of("end")[-1]["id"] == sink.of("say")[-1]["id"]
+
+
+async def test_duplicate_initiative_line_is_not_spoken_again_after_restart(tmp_path):
+    comp, llm, _, _, mem = build(tmp_path, history_window=1,
+                                 llm=FakeLLM(["[smug] A lixeira tem mais privacidade que eu."]))
+    comp.cfg.initiative.enabled = True
+    await comp.initiative_tick()
+    await settle(comp)
+    llm.replies = ["Confia, eu não arrasto arquivos por aí."]
+    await say(comp, "não mexe na minha pasta")
+    assert all("lixeira" not in message.text for message in mem.data.recent)
+    comp, llm, voice, sink, _ = build(tmp_path, history_window=1, llm=FakeLLM([
+        "[smug] A LIXEIRA tem mais privacidade que eu! [teasing] Pelo menos ela tem tampa."
+    ]))
+    comp.cfg.initiative.enabled = True
+    await comp.initiative_tick()
+    await settle(comp)
+    assert 'falas espontâneas recentes, não repita nem parafraseie: ["A lixeira tem mais privacidade que eu."]' in llm.prompts[0]
+    assert [t for t, _ in voice.spoken] == ["Pelo menos ela tem tampa."]
+    assert [s["text"] for s in sink.of("say")] == ["Pelo menos ela tem tampa."]
+    # Repetir sob demanda não é iniciativa espontânea.
+    llm.replies = ["A lixeira tem mais privacidade que eu."]
+    await say(comp, "repete a primeira piada")
+    assert voice.spoken[-1][0] == "A lixeira tem mais privacidade que eu."
+
+
+async def test_unsolicited_model_error_does_not_ask_user_to_repeat(tmp_path):
+    class Broken(FakeLLM):
+        async def stream(self, prompt):
+            raise LLMError("sem rede")
+            yield ""
+
+    comp, _, voice, _, _ = build(tmp_path, llm=Broken())
+    comp.cfg.initiative.enabled = True
+    await comp.initiative_tick()
+    await settle(comp)
+    assert not voice.spoken

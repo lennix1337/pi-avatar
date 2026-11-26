@@ -15,6 +15,7 @@ log = logging.getLogger("companion.memory")
 
 MAX_FACTS = 40
 MAX_JOKES = 12
+MAX_INITIATIVE_LINES = 12
 MAX_SUMMARY_CHARS = 700
 
 
@@ -30,6 +31,7 @@ class Message:
 class MemoryData:
     facts: list[str] = field(default_factory=list)
     jokes: list[str] = field(default_factory=list)
+    initiative_lines: list[str] = field(default_factory=list)
     summary: str = ""
     recent: list[Message] = field(default_factory=list)
     unsummarized: int = 0     # mensagens ainda não resumidas (as últimas N de `recent`)
@@ -41,8 +43,9 @@ SUMMARIZER_SYSTEM = (
     "Recebe a memória atual e as mensagens novas de uma conversa e devolve a memória atualizada. "
     "Responda SOMENTE com um objeto JSON, sem texto em volta, no formato "
     '{"facts": [...], "jokes": [...], "summary": "..."}. '
-    "facts: fatos duráveis sobre a pessoa (nome, gostos, rotina, projetos, pessoas importantes, humor atual relevante), "
-    "frases curtas, sem duplicar, no máximo 40; descarte o que ficou obsoleto ou foi corrigido. "
+    "facts: mantenha os fatos duráveis já registrados e acrescente só o que a pessoa disse sobre si "
+    "(gostos, rotina, projetos, pessoas importantes), em até 40 frases curtas, sem duplicar. "
+    "Correções mais recentes substituem o fato antigo. Piada, suposição ou fala da companheira não é fato sobre a pessoa. "
     "jokes: piadas internas, apelidos e assuntos recorrentes entre os dois, no máximo 12. "
     "summary: até 600 caracteres sobre o andamento do relacionamento e dos assuntos em aberto. "
     "Não invente nada que não esteja na conversa."
@@ -95,6 +98,9 @@ class Memory:
         d = self.data
         d.facts = [str(x) for x in raw.get("facts", [])]
         d.jokes = [str(x) for x in raw.get("jokes", [])]
+        lines = raw.get("initiative_lines")
+        if isinstance(lines, list):
+            d.initiative_lines = [line for line in lines[-MAX_INITIATIVE_LINES:] if isinstance(line, str)]
         d.summary = str(raw.get("summary", ""))
         d.unsummarized = int(raw.get("unsummarized", 0))
         d.last_seen = float(raw.get("last_seen", 0.0))
@@ -118,6 +124,11 @@ class Memory:
         d.last_seen = self.clock()
         self.save()
 
+    def add_initiative(self, text: str, lines: list[str], interrupted: bool = False) -> None:
+        """Registra a fala e as frases completas ouvidas no mesmo save."""
+        self.data.initiative_lines = (self.data.initiative_lines + lines)[-MAX_INITIATIVE_LINES:]
+        self.add("companion", text, interrupted)
+
     def needs_summary(self, min_messages: int | None = None) -> bool:
         return self.data.unsummarized >= (self.summarize_after if min_messages is None else min_messages)
 
@@ -131,7 +142,6 @@ class Memory:
         fresh = d.recent[-d.unsummarized:] if d.unsummarized else []
         if not fresh:
             return False
-        count = len(fresh)
         prompt = (
             "MEMÓRIA ATUAL\n" + json.dumps({"facts": d.facts, "jokes": d.jokes, "summary": d.summary}, ensure_ascii=False)
             + "\n\nMENSAGENS NOVAS\n" + render_transcript(fresh, "a pessoa", "a companheira")
@@ -151,7 +161,9 @@ class Memory:
         d.jokes = _dedupe(list(jokes) if isinstance(jokes, list) else d.jokes, MAX_JOKES)
         summary = parsed.get("summary", d.summary)
         d.summary = str(summary)[:MAX_SUMMARY_CHARS]
-        d.unsummarized = max(0, d.unsummarized - count)
+        # A janela pode ter girado durante o await. Só retire as mensagens do lote original.
+        last_summarized = next((i for i, m in enumerate(d.recent) if m is fresh[-1]), -1)
+        d.unsummarized = len(d.recent) - last_summarized - 1
         self.save()
         return True
 
